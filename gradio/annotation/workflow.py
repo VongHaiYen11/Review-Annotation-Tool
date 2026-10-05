@@ -1,0 +1,618 @@
+"""Transactional application actions. UI receives only accepted state snapshots."""
+import hashlib
+import logging
+import shutil
+import tempfile
+from collections import Counter
+from copy import deepcopy
+from pathlib import Path
+from uuid import uuid4
+from urllib.parse import quote
+from PIL import Image
+from .state import (new_state, set_verified_content, refresh_bbox_validation,
+                    initialize_alignment, require, invalidate,
+                    source_mismatch_confirmed)
+from .content import (annotation_text, edit_content_field,
+                              content_fields, content_document,
+                              validate_content_document,
+                              normalize_content_titles, normalize_metadata_fields)
+from .text_alignment import MISSING_ANNOTATION, characters, count_annotation_characters
+from .bbox import add_bbox, update_bbox, update_bboxes, delete_bbox, sync_draft_boxes
+from .status import (update_status, replace_statuses, confirm_status,
+                     synchronize_missing_statuses)
+from .reading_order import (update_text_sequence,
+                            update_text_tokens, restore_suspicious_tokens,
+                            token_id_for_box, validate_reading_order, suspicious_box_ids)
+from .io import (final_document, final_source_mismatch_document,
+                 source_mismatch_type, canonical_issue_type, validate_document,
+                 validate_source_mismatch_type)
+from .dataset import source_record
+from .detection_adapter import detect
+from crop.crop import (crop_bbox, default_crop,
+                       validate_crop_coordinates, validate_resized_image_size)
+
+log = logging.getLogger(__name__)
+
+
+def _source_mismatch_from_document(document):
+    result = {key: deepcopy(document[key]) for key in (
+        'source_text', 'source_character_count', 'bounding_box_count',
+        'note',
+    )}
+    result['issue_type'] = source_mismatch_type(document)
+    return result
+
+
+def _carry_source_mismatch_if_same_case(state):
+    issue = state.get('source_mismatch')
+    if not issue or issue.get('source_text') != state.get('annotation_text'):
+        state['source_mismatch'] = None
+        return
+    issue_type = canonical_issue_type(issue.get('issue_type'))
+    character_count = count_annotation_characters(state['annotation_text'])
+    box_count = len(state['regions'])
+    try:
+        validate_source_mismatch_type(issue_type, character_count, box_count)
+    except ValueError:
+        state['source_mismatch'] = None
+        return
+    state['source_mismatch'] = dict(
+        issue,
+        source_character_count=character_count,
+        bounding_box_count=box_count,
+    )
+
+
+def fingerprint(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _load_regions(state, document):
+    """Hydrate internal regions while preserving a saved public ID mapping."""
+    state['regions'] = {}
+    state['box_id_by_region'] = {}
+    state['region_uid_by_box_id'] = {}
+    for box_id, box in document['bounding_boxes'].items():
+        uid = uuid4().hex
+        state['regions'][uid] = deepcopy(box)
+        state['regions'][uid]['order'] = int(box_id)
+        state['box_id_by_region'][uid] = box_id
+        state['region_uid_by_box_id'][box_id] = uid
+    state['bounding_boxes'] = deepcopy(document['bounding_boxes'])
+    state['annotations'] = deepcopy(document.get('annotations', {}))
+    state['saved_annotation_text'] = annotations_to_text(state['annotations'])
+    # Saved `annotations` contain the final character -> Box mapping.
+    state['reading_order'] = sorted(map(int, document['bounding_boxes']))
+
+
+def annotations_to_text(annotations):
+    """Concatenate saved annotation values in Box ID order."""
+    if not isinstance(annotations, dict) or not annotations:
+        return ''
+    return ''.join(str(annotations[key]) for key in sorted(annotations, key=int))
+
+
+class Workflow:
+    def __init__(self, options):
+        self.options = options
+        self.content_titles = normalize_content_titles(options.content_titles)
+        self.metadata_fields = normalize_metadata_fields(
+            getattr(options, 'metadata_fields', ()))
+        self.verification_titles = (
+            tuple(label for label, _ in self.metadata_fields) + self.content_titles)
+        if len(set(self.verification_titles)) != len(self.verification_titles):
+            raise ValueError('Configured metadata and section labels must be unique.')
+        self.annotation_title = options.annotation_title
+        self._preview_cache = tempfile.TemporaryDirectory(prefix='sinonom-review-preview-')
+        self.preview_dir = Path(self._preview_cache.name)
+
+    def open_image(self, path, bundle):
+        state = new_state()
+        path = Path(path).resolve()
+        with Image.open(path) as im:
+            size = list(im.size)
+            # Serve ordinary JPEGs without decoding/re-encoding or expanding
+            # them into large PNG files. Normalize other formats/orientations
+            # once, retaining the original pixel dimensions for box alignment.
+            stat = path.stat()
+            key = fingerprint(f'{path}:{stat.st_mtime_ns}:{stat.st_size}')
+            preview_path = self.preview_dir / (key + '.jpg')
+            content_preview_path = self.preview_dir / (key + '-content.jpg')
+            if not preview_path.exists():
+                if im.format == 'JPEG' and im.mode in ('RGB', 'L') and im.getexif().get(274, 1) == 1:
+                    shutil.copyfile(path, preview_path)
+                else:
+                    im.convert('RGB').save(preview_path, format='JPEG', quality=95, subsampling=0)
+            if not content_preview_path.exists():
+                content_preview = im.convert('RGB')
+                content_preview.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+                content_preview.save(
+                    content_preview_path, format='JPEG', quality=85,
+                    optimize=True, progressive=True)
+        record = source_record(bundle, path.name, self.annotation_title)
+        located = dict(record=record, code=path.stem)
+        state.update(image=path.name, image_path=str(path), image_size=size,
+                     preview_dir=str(self.preview_dir),
+                     resized_image_size=list(size),
+                     image_url='gradio_api/file=' + quote(str(preview_path), safe='/'),
+                     content_preview_url=('gradio_api/file=' +
+                                          quote(str(content_preview_path), safe='/')),
+                     source_content=deepcopy(located['record']), source_baseline=deepcopy(located['record']),
+                     draft_content=deepcopy(located['record']), code=located['code'], current_step=2)
+        saved_crop = None
+        doc = deepcopy(bundle['document'])
+        is_mismatch = bundle['mismatch']
+        if doc:
+            hydrate_doc=doc
+            if is_mismatch and source_mismatch_type(doc) == 'other':
+                hydrate_doc={
+                    'bounding_boxes':{
+                        key:{'bbox':list(box['bbox']),'status':'intact'}
+                        for key,box in doc['bounding_boxes'].items()},
+                    'annotations':{},
+                    'reading_order':sorted(map(int,doc['bounding_boxes'])),
+                }
+            saved_crop = doc.get('crop')
+            if doc.get('image_resize'):
+                state['resized_image_size'] = validate_resized_image_size(
+                    doc['image_resize']['output_size'])
+            _load_regions(state, hydrate_doc)
+            if is_mismatch:
+                mismatch_type = source_mismatch_type(doc)
+                if mismatch_type == 'other':
+                    state['source_mismatch']={
+                        'source_text':state['annotation_text'],
+                        'source_character_count':count_annotation_characters(state['annotation_text']),
+                        'bounding_box_count':len(state['regions']),
+                        'issue_type':'other','note':doc['note']}
+                else:
+                    state['source_mismatch'] = _source_mismatch_from_document(doc)
+                    if mismatch_type == 'extra_text':
+                        state['text_sequence']=list(doc['text_sequence'])
+                        state['source_mismatch']['excluded_characters']=list(doc['excluded_characters'])
+            state['detection_loaded'] = True
+            state['loaded_document'] = deepcopy(doc)
+            state['saved_alignment_document'] = deepcopy(doc)
+            if (doc.get('annotations')
+                    and set(doc['annotations']) == set(state['bounding_boxes'])):
+                state['workflow']['alignment_valid'] = True
+                state['text_sequence'] = (
+                    list(doc.get('text_sequence', []))
+                    if is_mismatch and source_mismatch_type(doc) == 'extra_text'
+                    else ([doc['annotations'][str(box_id)]
+                           for box_id in state['reading_order']]
+                          if is_mismatch and source_mismatch_type(doc) == 'missing_text'
+                          else characters(state['saved_annotation_text']))
+                )
+                state['text_token_ids'] = [str(index) for index in
+                                           range(1, len(state['text_sequence']) + 1)]
+            state['loaded_is_mismatch'] = is_mismatch
+            state['loaded_region_uid_by_box_id'] = deepcopy(state['region_uid_by_box_id'])
+        suspicious = bundle.get('suspicious')
+        if suspicious:
+            known = set(state['bounding_boxes'])
+            restored_ids = [str(box_id) for box_id in suspicious['box_ids']]
+            if any(box_id not in known for box_id in restored_ids):
+                raise ValueError('Suspicious details reference an unknown Box ID.')
+            state['loaded_suspicious_box_ids'] = restored_ids
+        # Editing always uses source-image coordinates. Saved crop corners are
+        # in image_resize.output_size coordinates, so undo that resize on load.
+        state['crop'] = default_crop(size)
+        if saved_crop is not None:
+            scaled_crop = crop_bbox(saved_crop, state['resized_image_size'])
+            resized_w, resized_h = state['resized_image_size']
+            state['crop'] = validate_crop_coordinates([
+                scaled_crop[0] * size[0] / resized_w,
+                scaled_crop[1] * size[1] / resized_h,
+                scaled_crop[2] * size[0] / resized_w,
+                scaled_crop[3] * size[1] / resized_h,
+            ], size)
+            state['loaded_crop_source'] = list(state['crop'])
+            state['loaded_crop_scaled'] = list(scaled_crop)
+            state['crop_saved'] = True
+        state['loaded_content_document'] = deepcopy(bundle.get('content'))
+        state['annotation_text'] = annotation_text(record, path.stem, self.annotation_title)
+        state['verified_content'] = deepcopy(record)
+        if state.get('source_mismatch'):
+            state['source_mismatch']['source_text'] = state['annotation_text']
+            state['source_mismatch']['source_character_count'] = count_annotation_characters(state['annotation_text'])
+        state['original_box_id_by_region'] = {
+            uid: bundle.get('origins', {}).get(box_id)
+            for box_id, uid in state['region_uid_by_box_id'].items()}
+        token_count = len(state['bounding_boxes']) if is_mismatch and source_mismatch_type(doc) == 'other' else len(state['text_sequence'])
+        state['text_token_ids'] = [str(i) for i in range(1, token_count + 1)]
+        restore_suspicious_tokens(state, state.get('loaded_suspicious_box_ids', []))
+        state['workflow'].update(content_verified=True, bbox_valid=not is_mismatch,
+                                 alignment_valid=True, status_valid=True, reading_order_valid=True)
+        state['current_step'] = 7
+        state['mode'] = 'inspect'
+        log.info('Loaded imported annotation %s; inscription code=%s', path.name, state['code'])
+        return state
+
+    def apply(self, original, action, payload=None):
+        # Selection changes only two scalar fields. Box editing changes the
+        # region/workflow branches. Avoid copying the potentially large source
+        # record for these high-frequency canvas actions.
+        if action == 'select':
+            s = original.copy()
+        elif action in ('add', 'update', 'commit_boxes', 'delete', 'detect'):
+            s = original.copy()
+            s['regions'] = deepcopy(original['regions'])
+            s['workflow'] = original['workflow'].copy()
+        else:
+            s = deepcopy(original)
+        if original.get('region_uid_by_box_id'):
+            suspicious = set(suspicious_box_ids(original))
+            s['suspicious_region_uids'] = [uid for box_id, uid in original['region_uid_by_box_id'].items()
+                                           if box_id in suspicious]
+        payload = payload or {}
+        if not s.get('image'):
+            raise ValueError('Select an image first.')
+        if 'revision' in payload and (payload['revision'] != s['revision'] or payload.get('image') != s['image']):
+            raise ValueError('This action is out of date. The interface has been refreshed; please try again.')
+        if s.get('mode') == 'inspect':
+            raise ValueError('Choose Fix before editing this image.')
+        step = s['current_step']
+        if action == 'back':
+            if (step == 7 and source_mismatch_confirmed(s)
+                    and s['source_mismatch']['issue_type'] == 'other'):
+                s['current_step'] = 3
+            elif step == 6:
+                s['current_step'] = 4
+            else:
+                s['current_step'] = max(1, step - 1)
+        elif action == 'field':
+            if step != 2:
+                raise ValueError('Edit content in Step 2.')
+            s['draft_content'] = edit_content_field(
+                s['draft_content'], s['code'], payload['path'], payload['value'],
+                self.content_titles, self.metadata_fields)
+            s['workflow']['content_verified'] = False
+            s['saved'] = False
+        elif action in ('undo', 'original'):
+            s['draft_content'] = deepcopy(s['source_baseline'] if action == 'undo' else s['source_content'])
+            s['workflow']['content_verified'] = False
+        elif action == 'save_content':
+            text = annotation_text(s['draft_content'], s['code'], self.annotation_title)
+            if (not count_annotation_characters(text)
+                    and (s.get('source_mismatch') or {}).get('issue_type') != 'other'):
+                raise ValueError('Annotation text contains no characters after normalization.')
+            loaded_mapping = deepcopy(s.get('loaded_region_uid_by_box_id', {}))
+            loaded_alignment = deepcopy(s.get('saved_alignment_document') or
+                                         s.get('loaded_document'))
+            text_changed = text != s['annotation_text']
+            set_verified_content(s, s['draft_content'], text)
+            if text_changed:
+                s['source_mismatch'] = None
+            s.pop('loaded_document', None)
+            if loaded_alignment:
+                s['saved_alignment_document'] = loaded_alignment
+                mismatch_type = (source_mismatch_type(loaded_alignment)
+                                 if s.get('loaded_is_mismatch') else None)
+                saved_annotations = loaded_alignment.get('annotations', {})
+                box_ids = sorted(saved_annotations, key=int) if saved_annotations else []
+                saved_text = list(loaded_alignment.get('text_sequence', []))
+                source_chars = characters(text)
+                if mismatch_type == 'extra_text':
+                    text_matches = Counter(saved_text) == Counter(source_chars)
+                elif mismatch_type == 'missing_text':
+                    text_matches = Counter(
+                        value for value in
+                        (saved_annotations[key] for key in box_ids)
+                        if value != MISSING_ANNOTATION
+                    ) == Counter(source_chars)
+                else:
+                    text_matches = Counter(saved_annotations[key] for key in box_ids) == Counter(source_chars)
+                mapping_matches = bool(
+                    saved_annotations
+                    and set(saved_annotations) == set(loaded_alignment['bounding_boxes'])
+                    and set(loaded_mapping) == set(loaded_alignment['bounding_boxes'])
+                    and set(loaded_mapping.values()).issubset(s['regions'])
+                )
+                if text_matches and mapping_matches and mismatch_type != 'other':
+                    s['bounding_boxes'] = deepcopy(loaded_alignment['bounding_boxes'])
+                    s['annotations'] = deepcopy(saved_annotations)
+                    s['saved_annotation_text'] = annotations_to_text(saved_annotations)
+                    s['reading_order'] = list(map(int, box_ids))
+                    s['region_uid_by_box_id'] = deepcopy(loaded_mapping)
+                    s['box_id_by_region'] = {
+                        uid: box_id for box_id, uid in loaded_mapping.items()
+                    }
+                    s['text_sequence'] = (
+                        saved_text if mismatch_type == 'extra_text'
+                        else ([saved_annotations[key] for key in box_ids]
+                              if mismatch_type == 'missing_text'
+                              else characters(s['saved_annotation_text'])))
+                    s['text_token_ids'] = [str(index) for index in
+                                           range(1, len(s['text_sequence']) + 1)]
+                    if mismatch_type:
+                        s['source_mismatch'] = _source_mismatch_from_document(
+                            loaded_alignment)
+                        if mismatch_type == 'extra_text':
+                            s['source_mismatch']['excluded_characters'] = list(
+                                loaded_alignment['excluded_characters'])
+                    s['workflow']['alignment_valid'] = True
+                    synchronize_missing_statuses(s)
+                else:
+                    s.pop('saved_alignment_document', None)
+            s.pop('loaded_region_uid_by_box_id', None)
+            s.pop('loaded_is_mismatch', None)
+            s.pop('loaded_suspicious_box_ids', None)
+            refresh_bbox_validation(s)
+            orders = [region.get('order') for region in s['regions'].values()]
+            if (not s['workflow']['alignment_valid'] and s['workflow']['bbox_valid']
+                    and all(type(order) is int for order in orders)
+                    and sorted(orders) == list(range(1, len(orders) + 1))):
+                initialize_alignment(s, sorted(s['regions'], key=lambda uid: s['regions'][uid]['order']))
+            if (s['workflow']['bbox_valid'] and not (
+                    s.get('source_mismatch')
+                    and s['source_mismatch'].get('issue_type') == 'other')):
+                s['source_mismatch'] = None
+        elif action in ('add', 'update', 'commit_boxes', 'delete', 'detect'):
+            require(s, 'content_verified')
+            if step != 3:
+                raise ValueError('Edit bounding boxes in Step 3.')
+            if action == 'detect':
+                if getattr(self.options, 'skip_detection', False):
+                    raise ValueError('Detection is disabled (--skip-detection). Draw boxes manually.')
+                # Detection IDs are discarded; Gradio owns hidden region identity.
+                doc = detect(s['image_path'], self.options)
+                validate_document(doc, s['image'], s['image_size'])
+                s['regions'] = {uuid4().hex: deepcopy(box) for box in doc['bounding_boxes'].values()}
+                s['selected_region_uid'] = next(iter(s['regions']), None)
+                s['selected_region_uids'] = [s['selected_region_uid']] if s['selected_region_uid'] else []
+                s['selection_cleared'] = False
+                s['detection_loaded'] = True
+                invalidate(s, clear=True)
+            elif action == 'add':
+                if payload.get('boxes'):
+                    update_bboxes(s,payload['boxes'],payload.get('active'),
+                                  payload.get('selected'))
+                s['selected_region_uid'] = add_bbox(s, payload['bbox'])
+                s['selected_region_uids'] = [s['selected_region_uid']]
+                s['selection_cleared'] = False
+            elif action == 'update':
+                update_bbox(s, payload.get('uid') or payload.get('id') or s['selected_region_uid'], payload['bbox'])
+            elif action == 'commit_boxes':
+                sync_draft_boxes(
+                    s, payload,
+                    materialize_alignment=payload.get('materialize_alignment', True))
+                s['selection_cleared'] = bool(payload.get('selection_cleared', False))
+                if s['selection_cleared']:
+                    s['selected_region_uid'] = None
+                    s['selected_region_uids'] = []
+            else:
+                selected = payload.get('ids') or [payload.get('uid') or payload.get('id') or s['selected_region_uid']]
+                selected = list(dict.fromkeys(selected))
+                if not selected or any(uid not in s['regions'] for uid in selected):
+                    raise ValueError('One or more selected regions do not exist.')
+                for uid in selected:
+                    delete_bbox(s, uid)
+                s['selected_region_uids'] = [uid for uid in s.get('selected_region_uids', []) if uid in s['regions']]
+                s['selected_region_uid'] = s['selected_region_uids'][-1] if s['selected_region_uids'] else next(iter(s['regions']), None)
+            refresh_bbox_validation(s)
+            if action in ('add', 'delete', 'detect'):
+                s['source_mismatch'] = None
+        elif action == 'sort_boxes_calc':
+            raise ValueError('sort_boxes_calc is calculation-only and must use the UI adapter.')
+        elif action == 'sort_boxes':
+            require(s, 'content_verified')
+            if step != 3:
+                raise ValueError('Sort bounding boxes in Step 3.')
+            refresh_bbox_validation(s)
+            if not (s['workflow']['bbox_valid'] or source_mismatch_confirmed(s)):
+                raise ValueError('Match the box and character counts or confirm a source mismatch before sorting.')
+            initialize_alignment(s)
+        elif action == 'confirm_source_mismatch':
+            if step != 3:
+                raise ValueError('Confirm a source mismatch in Step 3.')
+            require(s, 'content_verified')
+            refresh_bbox_validation(s)
+            issue_type = canonical_issue_type(payload.get('issue_type'))
+            if s['workflow']['bbox_valid'] and issue_type != 'other':
+                raise ValueError('Source mismatch can only be confirmed when the counts differ.')
+            note = payload.get('note', '')
+            character_count = count_annotation_characters(s['annotation_text'])
+            box_count = len(s['regions'])
+            try:
+                validate_source_mismatch_type(issue_type, character_count, box_count)
+            except ValueError as exc:
+                raise ValueError('Select a source mismatch type that matches the count difference.') from exc
+            if not isinstance(note, str):
+                raise ValueError('Source mismatch note must be text.')
+            if issue_type == 'other' and not note.strip():
+                raise ValueError('Other source mismatches require a note.')
+            s['source_mismatch'] = {
+                'source_text': s['annotation_text'],
+                'source_character_count': character_count,
+                'bounding_box_count': box_count,
+                'issue_type': issue_type,
+                'note': note.strip(),
+            }
+            invalidate(s, clear=True)
+        elif action == 'clear_source_mismatch':
+            if step != 3:
+                raise ValueError('Clear a source mismatch in Step 3.')
+            s['source_mismatch'] = None
+            invalidate(s, clear=True)
+            # Do not leave a previously materialized mismatch alignment usable.
+            s['workflow']['bbox_valid'] = False
+        elif action == 'select':
+            if step == 3:
+                uid = payload.get('uid') or payload.get('id')
+                if uid not in s['regions']:
+                    raise ValueError('Region does not exist.')
+                s['selected_region_uid'] = uid
+                s['selection_cleared'] = False
+                selected = list(s.get('selected_region_uids', []))
+                if payload.get('toggle'):
+                    was_selected = uid in selected
+                    selected = [item for item in selected if item != uid] if was_selected else selected + [uid]
+                    if not was_selected:
+                        s['selected_region_uid'] = uid
+                    elif s['selected_region_uid'] == uid:
+                        s['selected_region_uid'] = selected[-1] if selected else None
+                else:
+                    selected = [uid]
+                s['selected_region_uids'] = selected
+            else:
+                key = str(payload['id'])
+                if key not in s['bounding_boxes']:
+                    raise ValueError('Box does not exist.')
+                s['selected_box_id'] = key
+                s['selected_region_uid'] = s['region_uid_by_box_id'].get(key)
+                s['selected_token_id'] = token_id_for_box(s, key)
+        elif action == 'suspicious':
+            if step != 4:
+                raise ValueError('Mark suspicious annotations in Step 4.')
+            token_id = str(payload.get('token_id') or '')
+            if token_id not in set(map(str,s.get('text_token_ids',[]))):
+                raise ValueError('Select an annotation first.')
+            suspicious = set(map(str, s.get('suspicious_token_ids', [])))
+            if bool(payload.get('value')):
+                suspicious.add(token_id)
+            else:
+                suspicious.discard(token_id)
+            s['suspicious_token_ids'] = sorted(suspicious, key=int)
+            s['saved'] = False
+        elif action == 'status':
+            if step not in (4, 5):
+                raise ValueError('Edit status in the Status & Order step.')
+            box_id = str(payload.get('id') or s['selected_box_id'])
+            update_status(s, s['region_uid_by_box_id'].get(box_id), payload['status'], payload.get('unknown', False))
+        elif action == 'statuses':
+            if step not in (4, 5):
+                raise ValueError('Edit statuses in the Status & Order step.')
+            replace_statuses(s, payload.get('statuses'), payload.get('unknowns'))
+        elif action == 'reorder_text':
+            if step != 4:
+                raise ValueError('Edit character assignment in Step 4.')
+            if payload.get('token_order') is None:
+                update_text_sequence(s, payload['sequence'])
+            else:
+                update_text_tokens(s,payload['sequence'],payload['token_order'])
+            suspicious_ids = payload.get('suspicious_token_ids')
+            if suspicious_ids is not None:
+                suspicious_ids = list(map(str, suspicious_ids))
+                known_tokens = set(map(str, s.get('text_token_ids', [])))
+                if (len(suspicious_ids) != len(set(suspicious_ids))
+                        or not set(suspicious_ids).issubset(known_tokens)):
+                    raise ValueError('Suspicious token selection is invalid.')
+                s['suspicious_token_ids'] = sorted(suspicious_ids, key=int)
+        elif action == 'next':
+            if payload and 'boxes' in payload:
+                sync_draft_boxes(s, payload)
+            s['selected_region_uid'] = None
+            s['selected_region_uids'] = []
+            s['selected_box_id'] = None
+            if step == 1:
+                s['current_step'] = 2
+            elif step == 2:
+                s = self.apply(s, 'save_content')
+                s['current_step'] = 3
+            elif step == 3:
+                refresh_bbox_validation(s)
+                if not (s['workflow']['bbox_valid'] or source_mismatch_confirmed(s)):
+                    raise ValueError('Match the box and character counts or confirm a source mismatch.')
+                has_saved_alignment = bool(
+                    (s.get('saved_alignment_document') or s.get('loaded_document'))
+                    and (s.get('saved_alignment_document') or s.get('loaded_document')).get('annotations')
+                    and set((s.get('saved_alignment_document') or s.get('loaded_document'))['annotations'])
+                        == set(s['bounding_boxes'])
+                )
+                if has_saved_alignment:
+                    document = s.get('saved_alignment_document') or s['loaded_document']
+                    mismatch_type = (source_mismatch_type(document)
+                                     if 'inscription_code' in document else None)
+                    saved_values = list(document['annotations'].values())
+                    saved_text_matches = (
+                        mismatch_type == 'extra_text'
+                        and ''.join(document.get('text_sequence', [])) == s['annotation_text']
+                        or mismatch_type == 'missing_text'
+                        and ''.join(value for value in saved_values if value != 'MISS')
+                            == s['annotation_text']
+                        or mismatch_type is None and ''.join(saved_values) == s['annotation_text']
+                    )
+                    if saved_text_matches or mismatch_type is None:
+                        s['annotations'] = deepcopy(document['annotations'])
+                        s['reading_order'] = sorted(map(int, s['bounding_boxes']))
+                        s['text_sequence'] = (
+                            list(document.get('text_sequence', []))
+                            if mismatch_type == 'extra_text'
+                            else [s['annotations'][str(box_id)]
+                                  for box_id in s['reading_order']]
+                        )
+                        s['text_token_ids'] = [str(index) for index in
+                                               range(1, len(s['text_sequence']) + 1)]
+                        s['workflow']['alignment_valid'] = True
+                        s.pop('saved_alignment_document', None)
+                if not s['workflow']['alignment_valid']:
+                    mapped = set(s.get('box_id_by_region', {}))
+                    n = len(s['regions'])
+                    if n > 0 and set(s['regions']).issubset(mapped) and len(mapped) == n:
+                        s['workflow']['alignment_valid'] = True
+                    else:
+                        orders=[box.get('order') for box in s['regions'].values()]
+                        integers=[value for value in orders
+                                  if isinstance(value,int) and not isinstance(value,bool)
+                                  and value >= 1]
+                        missing=sorted(set(range(1,n+1))-set(integers))
+                        duplicates=sorted({value for value in integers
+                                           if integers.count(value)>1})
+                        details=[f'Expected reading order 1–{n}.']
+                        if any(value is None for value in orders):
+                            details.append(f'Unassigned boxes: {sum(value is None for value in orders)}.')
+                        if missing:details.append('Missing: '+', '.join(map(str,missing))+'.')
+                        if duplicates:details.append('Duplicate: '+', '.join(map(str,duplicates))+'.')
+                        raise ValueError(' '.join(details))
+                if (source_mismatch_confirmed(s)
+                        and s['source_mismatch']['issue_type'] == 'other'):
+                    s['current_step'] = 7
+                elif not s['workflow']['alignment_valid']:
+                    raise ValueError('Sort boxes before continuing so the numbered reading order is saved.')
+                else:
+                    s['current_step'] = 4
+            elif step == 4:
+                require(s, 'alignment_valid')
+                if not validate_reading_order(s):
+                    raise ValueError('Invalid coordinate-slot order.')
+                s['workflow']['reading_order_valid'] = True
+                confirm_status(s)
+                (final_source_mismatch_document(s) if source_mismatch_confirmed(s)
+                 else final_document(s))
+                s['current_step'] = 6
+            elif step == 5:
+                require(s, 'alignment_valid')
+                require(s, 'reading_order_valid')
+                confirm_status(s)
+                (final_source_mismatch_document(s) if source_mismatch_confirmed(s)
+                 else final_document(s))
+                s['current_step'] = 6
+            elif step == 6:
+                # Crop is independent. Review still requires a valid annotation.
+                (final_source_mismatch_document(s) if source_mismatch_confirmed(s)
+                 else final_document(s))
+                s['current_step'] = 7
+        elif action == 'save':
+            if step != 7:
+                raise ValueError('Complete Review before saving.')
+            (final_source_mismatch_document(s) if source_mismatch_confirmed(s) else final_document(s))
+            s['saved'] = True
+        elif action == 'crop':
+            if step != 6:
+                raise ValueError('Edit crop in Step 6.')
+            s['crop'] = validate_crop_coordinates(payload['bbox'], s['image_size'])
+            s.pop('loaded_crop_source', None)
+            s.pop('loaded_crop_scaled', None)
+            s['crop_saved'] = False
+            s['saved'] = False
+        elif action == 'save_crop':
+            if step != 6:
+                raise ValueError('Save crop in Step 6.')
+            # Kept as a session-only compatibility action; Save Annotation
+            # commits the crop together with the final image document.
+            s['crop_saved'] = True
+        else:
+            raise ValueError('Invalid action: ' + action)
+        s['revision'] += 1
+        return s
