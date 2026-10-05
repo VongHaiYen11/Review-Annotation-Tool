@@ -324,6 +324,15 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(opened), 59)
         self.assertTrue(opened[54]['visible'])
         self.assertFalse(opened[40]['visible'])
+        self.assertFalse(opened[37]['visible'])
+        self.assertEqual(opened[37]['value'], '')
+        inspection = opened[55]['value']['markup']
+        self.assertIn('Review Image', inspection)
+        self.assertIn('workbench-board inspection-board', inspection)
+        for removed in ('review-editor', 'REVIEW &amp; VERIFICATION',
+                        'status-order-board', 'class="dimensions"',
+                        'class="zoom-label"', 'cropped review'):
+            self.assertNotIn(removed, inspection)
         fixed = functions['start_fix'](ctx)
         self.assertEqual(fixed[0]['active']['current_step'], 2)
         self.assertTrue(fixed[57]['visible'])

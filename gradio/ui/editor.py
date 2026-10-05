@@ -9,6 +9,7 @@ from .icons import DOCUMENT
 
 SCRIPT = (Path(__file__).parent / 'assets/editor.js').read_text()
 CSS = (Path(__file__).parent / 'assets/editor.css').read_text()
+INSPECTION_CSS = CSS + '\nheight: 100%; min-height: 0; overflow: hidden;\n'
 
 
 def _review_point(point, crop, scale_x, scale_y):
@@ -48,6 +49,7 @@ def snapshot(s):
             <h2>Select an image</h2></div>''',
             revision=s['revision'], image=None, step=1)
     step=s['current_step']; source_w,source_h=s['image_size']
+    inspecting=s.get('mode') == 'inspect'
     source_mismatch=source_mismatch_confirmed(s)
     w,h=s['image_size']
     draw_w,draw_h=w,h
@@ -104,13 +106,20 @@ def snapshot(s):
                   f'{source_w} × {source_h} px → {w} × {h} px'
                   if step == 6 and [w,h] != [source_w,source_h]
                   else f'{w} × {h} px')
-    board_class = ' status-order-board review-board' if step == 7 else ' status-order-board' if step == 4 else ''
+    board_class = (' inspection-board' if inspecting else
+                   ' status-order-board review-board' if step == 7 else
+                   ' status-order-board' if step == 4 else '')
+    title = 'Review Image' if step == 7 else filename
+    file_icon = '' if step == 7 else f'<span class="file-icon">{DOCUMENT}</span>'
+    dimension_markup = '' if step == 7 else f'<span class="dimensions">{dimensions}</span>'
+    zoom_markup = '' if step == 7 else '<span class="zoom-label" aria-live="polite">100%</span>'
+    canvas_label = 'Review Image' if step == 7 else f'{filename} · annotation canvas'
     markup=f'''<div class="workbench-board{board_class}"><div class="workspace-toolbar">
-        <div class="workspace-context"><span class="file-icon">{DOCUMENT}</span><strong>{filename}</strong><span class="dimensions">{dimensions}</span></div>
-        <div class="toolbar-tools"><span class="zoom-label" aria-live="polite">100%</span>
+        <div class="workspace-context">{file_icon}<strong>{title}</strong>{dimension_markup}</div>
+        <div class="toolbar-tools">{zoom_markup}
         <button type="button" data-zoom="out" aria-label="Zoom out"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
         <button type="button" data-zoom="in" aria-label="Zoom in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10"/></svg></button></div></div>
-        <div class="image-viewport"><svg class="annotation-canvas" viewBox="0 0 {canvas_w} {canvas_h}" role="img" aria-label="{filename} · {'cropped review' if step == 7 else 'annotation canvas'}" style="aspect-ratio:{canvas_w}/{canvas_h}">
+        <div class="image-viewport"><svg class="annotation-canvas" viewBox="0 0 {canvas_w} {canvas_h}" role="img" aria-label="{canvas_label}" style="aspect-ratio:{canvas_w}/{canvas_h}">
         <image href="{html.escape(review_image_url, quote=True)}" x="0" y="0" width="{canvas_w if step == 7 else draw_w}" height="{canvas_h if step == 7 else draw_h}" preserveAspectRatio="none"/>
         '''
     # Scale labels/handles to image size so full-resolution scans remain editable.
@@ -205,7 +214,7 @@ def snapshot(s):
                 <p class="order-help">{help_text}</p>
                 <div class="order-chips" data-excluded-count="{excluded_count}" data-alignment-ready="false" aria-busy="true" role="list" aria-label="Sortable character assignment">{''.join(chips)}</div>
                 <p class="order-sync-note" aria-live="polite">Order changes stay local until you apply them or continue.</p></section>'''
-        if step==7:
+        if step==7 and not inspecting:
             source=html.escape(s['annotation_text'])
             source_label=('Source text' if source_mismatch else
                           'Verified annotation text' if s['workflow']['content_verified']
@@ -226,7 +235,7 @@ def snapshot(s):
                     {note}</div>'''
             else:
                 review='<div class="review-text"><p>'+html.escape(build_text_sequence(s))+'</p></div>'
-            markup+=f'''<section class="review-editor"><div class="order-heading"><div><span class="eyebrow">REVIEW & VERIFICATION</span><h2>Final Result</h2></div></div>
+            markup+=f'''<section class="review-editor"><div class="order-heading"><div><h2>Final Result</h2></div></div>
                 <div class="review-detail">{review}</div></section>'''
     markup += '''
     <div id="sort-overwrite-modal" class="modal-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="sort-overwrite-title">

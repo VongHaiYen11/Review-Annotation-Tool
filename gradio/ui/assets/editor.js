@@ -511,10 +511,12 @@ const fitCanvas = (width, height, focalPoint = null) => {
 
   const style = getComputedStyle(viewport);
   const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
 
   const availW = Math.max(100, (viewport.clientWidth || 400) - padX);
 
-  const baselineWidth = availW;
+  const availH = Math.max(100, (viewport.clientHeight || 400) - padY);
+  const baselineWidth = props.value.readOnly ? w * (availH / h) : availW;
   const baselineHeight = h * (baselineWidth / w);
 
   const prevZoomFactor = imageTransform.currentZoomFactor || (Math.max(25, Math.min(500, imageTransform.zoom || 100)) / 100);

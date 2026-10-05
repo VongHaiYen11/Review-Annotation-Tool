@@ -9,6 +9,28 @@
   font-size: 12px;
 }
 
+.workbench-board.inspection-board {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+.inspection-board .workspace-toolbar,
+.inspection-board .status-legend { flex: 0 0 auto; }
+.inspection-board .workspace-context strong { font-size: 14px; font-weight: 600; }
+.inspection-board .image-viewport {
+  flex: 1 1 0;
+  height: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  align-items: flex-start;
+}
+
 .ui-icon { display: inline-block; flex: 0 0 auto; width: 16px; height: 16px; vertical-align: middle; }
 .annotation-canvas text,
 .sidebar-source-text p,

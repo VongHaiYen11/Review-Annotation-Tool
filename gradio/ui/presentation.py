@@ -25,7 +25,7 @@ def app_identity(state):
 
 def workflow_progress(state):
     if state.get('mode') == 'inspect':
-        return '<nav class="inspection-progress">Review imported annotation · Finish or Fix</nav>'
+        return ''
     step = display_step(state['current_step']); workflow = state['workflow']
     complete = [bool(state['image']), workflow['content_verified'],
                 workflow['content_verified'] and (workflow['bbox_valid'] or source_mismatch_confirmed(state)),

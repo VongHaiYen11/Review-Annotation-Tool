@@ -24,8 +24,8 @@ from annotation.export import export_payload
 from annotation.dataset import load_dataset
 from annotation.session import new_session, commit
 from annotation.summary import build_summary, STAGES
-from ui.review import content_markup
-from ui.editor import snapshot, source_text, SCRIPT, CSS
+from ui.review import content_markup, CONTENT_CSS
+from ui.editor import snapshot, source_text, SCRIPT, CSS, INSPECTION_CSS
 from ui.presentation import (APP_CSS, app_identity, workflow_progress,
                              panel_heading, panel_summary, footer,
                              status_rows, SECTION_LABELS)
@@ -276,10 +276,10 @@ def create_app(options):
             with gr.Row(elem_id='topbar', scale=0):
                 progress=gr.HTML(app_identity(initial['active']), elem_id='app-chrome')
                 with gr.Row(elem_id='header-actions', scale=0):
-                    note_open=gr.Button('Note', scale=0, elem_id='note-open', interactive=False)
+                    note_open=gr.Button('Note', scale=0, min_width=0, elem_id='note-open', interactive=False)
                     history_open=gr.Button('History', elem_id='history-open',
-                                           elem_classes=['icon-button'], scale=0)
-                    save_all=gr.Button('Download All', variant='primary', scale=0,
+                                           elem_classes=['icon-button'], scale=0, min_width=0)
+                    save_all=gr.Button('Download All', variant='primary', scale=0, min_width=0,
                                         elem_id='save-all',
                                         interactive=True)
             workflow_chrome=gr.HTML(workflow_progress(initial['active']),
@@ -469,8 +469,8 @@ def create_app(options):
                                 elem_classes='han-nom-json')
         with gr.Column(visible=False, elem_id='inspection-screen') as inspection_screen:
             with gr.Row(elem_id='inspection-columns'):
-                inspection_board=gr.HTML(value=snapshot(initial['active']), html_template='${value.markup}', css_template=CSS, js_on_load=SCRIPT, elem_id='inspection-board')
-                inspection_content=gr.HTML(elem_id='inspection-content')
+                inspection_board=gr.HTML(value=snapshot(initial['active']), html_template='${value.markup}', css_template=INSPECTION_CSS, js_on_load=SCRIPT, elem_id='inspection-board')
+                inspection_content=gr.HTML(html_template='${value}', css_template=CONTENT_CSS, elem_id='inspection-content')
             with gr.Row(elem_id='inspection-actions'):
                 finish=gr.Button('Finish', variant='primary')
                 fix=gr.Button('Fix')
@@ -571,7 +571,7 @@ def create_app(options):
                     gr.update(value=issue.get('note','')),
                     gr.update(interactive=has and step==3),gr.update(visible=mismatch),
                     gr.update(visible=has and step in (3,4)),
-                    workflow_progress(s),LOADING_HIDDEN,
+                    gr.update(value=workflow_progress(s),visible=not inspecting),LOADING_HIDDEN,
                     gr.update(visible=step==1),gr.update(visible=has and step>1 and not inspecting),
                     gr.update(visible=has and step>1 and not inspecting),gr.update(visible=has and step>1 and not inspecting),
                     (f'`{s["image"]}`' if has else '—'),
