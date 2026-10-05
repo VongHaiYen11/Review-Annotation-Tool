@@ -18,7 +18,7 @@ def load_dataset(archive_path, images):
     with zipfile.ZipFile(archive_path) as archive:
         for name in FILES:
             matches = [info for info in archive.infolist()
-                       if Path(info.filename).name in (name + '.json', 'Reviewed_' + name + '.json')]
+                       if Path(info.filename).name in (name + '.json', 'review_' + name + '.json')]
             if len(matches) > 1:
                 raise ValueError(f'Duplicate {name} files in ZIP.')
             if matches:

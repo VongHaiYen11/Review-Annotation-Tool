@@ -14,7 +14,7 @@ python gradio/app.py \
   --skip-detection
 ```
 
-The ZIP must contain `text_annotations.json` and/or `source_mismatches.json`. It may also contain `inscription_content.json` and `suspicious_details.json`. Files inside a parent directory in the ZIP are supported. The corresponding `Reviewed_` filenames are also supported, so reviewed submissions can be opened again. A previous summary is not imported: each new review session evaluates the supplied dataset as its baseline.
+The ZIP must contain `text_annotations.json` and/or `source_mismatches.json`. It may also contain `inscription_content.json` and `suspicious_details.json`. Files inside a parent directory in the ZIP are supported. The corresponding `review_` filenames are also supported, so reviewed submissions can be opened again. A previous summary is not imported: each new review session evaluates the supplied dataset as its baseline.
 
 Original images must be directly inside the image folder, with unique filename stems. Records match their full `image` filenames. The picker and History show only images present in both the folder and the ZIP annotation records. Extra folder images are omitted; records whose images are missing are preserved unchanged in downloads and remain unreviewed in the summary. Available images are validated against their actual dimensions; missing images use declared source dimensions when present. Duplicate annotations, conflicting normal/mismatch records, and invalid geometry are rejected at startup. ZIP contents are read directly without extraction.
 
@@ -42,13 +42,13 @@ Save Annotation and Save note only update session memory. **Download All is the 
 
 ## Download format
 
-The browser downloads `Reviewed_annotations.zip`, always containing:
+The browser downloads `review_annotations.zip`, always containing:
 
-- `Reviewed_text_annotations.json`
-- `Reviewed_inscription_content.json`
-- `Reviewed_source_mismatches.json`
-- `Reviewed_suspicious_details.json`
-- `Reviewed_summary.json`
+- `review_text_annotations.json`
+- `review_inscription_content.json`
+- `review_source_mismatches.json`
+- `review_suspicious_details.json`
+- `review_summary.json`
 
 The four data files contain the complete imported dataset with committed corrections applied. Unreviewed records keep their originals. Accepted unchanged records keep their originals. A corrected record replaces its original; unresolved drafts use the last committed version or original.
 

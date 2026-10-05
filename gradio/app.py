@@ -450,18 +450,18 @@ def create_app(options):
                     board=gr.HTML(value=snapshot(initial['active']),html_template='${value.markup}',css_template=CSS,js_on_load=SCRIPT, elem_id='annotation-board')
                     with gr.Group(visible=False, elem_id='final-json-previews',
                                   elem_classes=['section','final-json-previews']) as final_json_group:
-                        with gr.Accordion('text_annotations.json', open=True,
+                        with gr.Accordion('review_text_annotations.json', open=True,
                                           elem_classes='section'):
                             preview=gr.JSON(
                                 label='Image JSON', visible=True,
                                 elem_id='final-preview', elem_classes='han-nom-json')
-                        with gr.Accordion('suspicious_details.json', open=False,
+                        with gr.Accordion('review_suspicious_details.json', open=False,
                                           elem_classes='section') as suspicious_json_section:
                             suspicious_preview=gr.JSON(
                                 label='Suspicious Details', visible=True,
                                 elem_id='suspicious-preview',
                                 elem_classes='han-nom-json')
-                        with gr.Accordion('source_mismatches.json', open=False,
+                        with gr.Accordion('review_source_mismatches.json', open=False,
                                           elem_classes='section') as source_mismatches_json_section:
                             source_mismatches_preview=gr.JSON(
                                 label='Source Mismatches', visible=True,

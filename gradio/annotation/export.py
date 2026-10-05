@@ -11,11 +11,11 @@ from .summary import build_summary
 def export_documents(ctx):
     bundles={**ctx['baseline'], **ctx['committed']}
     return {
-        'Reviewed_text_annotations.json': [deepcopy(b['document']) for b in bundles.values() if not b['mismatch']],
-        'Reviewed_inscription_content.json': [deepcopy(b['content']) for b in bundles.values() if b.get('content') is not None],
-        'Reviewed_source_mismatches.json': [deepcopy(b['document']) for b in bundles.values() if b['mismatch']],
-        'Reviewed_suspicious_details.json': {Path(image).stem:deepcopy(b['suspicious']) for image,b in bundles.items() if b.get('suspicious')},
-        'Reviewed_summary.json': build_summary(ctx),
+        'review_text_annotations.json': [deepcopy(b['document']) for b in bundles.values() if not b['mismatch']],
+        'review_inscription_content.json': [deepcopy(b['content']) for b in bundles.values() if b.get('content') is not None],
+        'review_source_mismatches.json': [deepcopy(b['document']) for b in bundles.values() if b['mismatch']],
+        'review_suspicious_details.json': {Path(image).stem:deepcopy(b['suspicious']) for image,b in bundles.items() if b.get('suspicious')},
+        'review_summary.json': build_summary(ctx),
     }
 
 
@@ -28,4 +28,4 @@ def export_archive(ctx):
 
 
 def export_payload(ctx):
-    return json.dumps(dict(name='Reviewed_annotations.zip',content=base64.b64encode(export_archive(ctx)).decode('ascii')))
+    return json.dumps(dict(name='review_annotations.zip',content=base64.b64encode(export_archive(ctx)).decode('ascii')))
