@@ -17,7 +17,9 @@ SECTION_LABELS = {
 
 def app_identity(state):
     filename = html.escape(state['image'] or 'No image selected')
-    return f'''<header class="app-header">
+    mode = state.get('mode') if state.get('image') else 'pick'
+    mode = mode if mode in ('inspect', 'fix') else 'pick'
+    return f'''<header class="app-header" data-review-mode="{mode}">
       <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">文</span>
         <div><h1>Sino-Nôm Review Tool</h1><div class="file-name">{filename}</div></div></div>
     </header>'''

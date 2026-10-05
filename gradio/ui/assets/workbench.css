@@ -1125,18 +1125,23 @@ button#clear-source-mismatch:hover { background: var(--color-panel-hover) !impor
 }
 
 /* Evaluation is a viewport-sized workspace with independent pane scrolling. */
-.gradio-container:has(#inspection-screen:not([style*="display: none"])) .main { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
-.gradio-container:has(#inspection-screen:not([style*="display: none"])) #workspace { display: none !important; }
+.gradio-container:has(#app-chrome [data-review-mode="inspect"]) .main { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
+.gradio-container:has(#app-chrome [data-review-mode="inspect"]) .contain > .column { flex: 1 1 0 !important; height: 100%; min-height: 0; overflow: hidden; }
+.gradio-container:has(#app-chrome [data-review-mode="inspect"]) #workspace { display: none !important; }
 #inspection-screen { flex: 1 1 0 !important; height: 0; min-height: 0; overflow: hidden; gap: 12px; }
 #inspection-columns { display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; align-items: stretch; }
-#inspection-board, #inspection-content { min-width: 0; min-height: 0; height: 100%; overflow: hidden; border: 1px solid var(--color-border); border-radius: 8px; }
+#inspection-board, #inspection-content { min-width: 0; min-height: 0; height: 100%; overflow: hidden !important; border: 1px solid var(--color-border); border-radius: 8px; }
+#inspection-board > .html-container, #inspection-content > .html-container { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; padding: 0; }
+#inspection-board > .html-container > .prose, #inspection-content > .html-container > .prose { flex: 1 1 0; height: 100%; min-height: 0; margin: 0; padding: 0; overflow: hidden; }
 #inspection-board .workbench-board { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
 #inspection-board .image-viewport { flex: 1; height: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 #inspection-board .review-editor { display: none; }
 #inspection-content .review-content-pane { height: 100%; overflow: auto; overscroll-behavior: contain; padding: 24px; box-sizing: border-box; }
 .review-content-pane p { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--han-nom-font), Arial, sans-serif; line-height: 1.8; }
 #inspection-actions { flex: 0 0 auto; }
-#note-dialog { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; width: min(560px, 90vw); max-height: 90dvh; overflow: auto; padding: 16px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-panel); box-shadow: 0 0 0 100vmax #0009; }
+#note-dialog { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; display: flex; flex-direction: column; width: min(560px, 90vw); min-height: 300px; max-height: 90dvh; flex-shrink: 0; overflow: hidden; box-sizing: border-box; padding: 16px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-panel); box-shadow: 0 0 0 100vmax #0009; }
+#note-fields { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 24px; }
+#note-footer { position: sticky; bottom: 0; z-index: 1; flex: 0 0 auto; padding-top: 12px; border-top: 1px solid var(--color-border); background: var(--color-panel); }
 #reset-all { margin-top: 8px; }
 @media (max-width: 700px) {
   #inspection-content .review-content-pane { padding: 12px; }

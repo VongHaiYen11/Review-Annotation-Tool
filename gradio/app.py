@@ -276,7 +276,7 @@ def create_app(options):
             with gr.Row(elem_id='topbar', scale=0):
                 progress=gr.HTML(app_identity(initial['active']), elem_id='app-chrome')
                 with gr.Row(elem_id='header-actions', scale=0):
-                    note_open=gr.Button('Note', scale=0, min_width=0, elem_id='note-open', interactive=False)
+                    note_open=gr.Button('Note', scale=0, min_width=0, elem_id='note-open', visible=False, interactive=False)
                     history_open=gr.Button('History', elem_id='history-open',
                                            elem_classes=['icon-button'], scale=0, min_width=0)
                     save_all=gr.Button('Download All', variant='primary', scale=0, min_width=0,
@@ -303,14 +303,15 @@ def create_app(options):
                         show_label=False, container=False,
                         elem_id='history-filter')
                 history_results=gr.HTML(elem_id='history-results')
-        with gr.Group(visible=False, elem_id='note-dialog') as note_dialog:
-            note_image=gr.Textbox(label='Image', interactive=False)
-            note_stage=gr.Dropdown([
-                ('Content', 'content'), ('Bounding Boxes & Sort', 'bounding_boxes'),
-                ('Status & Order', 'status_and_order'), ('Crop', 'crop'), ('Review', 'review')],
-                value='review', label='Stage', interactive=False)
-            note_text=gr.Textbox(label='Evaluator note', lines=4)
-            with gr.Row():
+        with gr.Column(visible=False, min_width=0, scale=0, elem_id='note-dialog') as note_dialog:
+            with gr.Column(min_width=0, elem_id='note-fields'):
+                note_image=gr.Textbox(label='Image', interactive=False)
+                note_stage=gr.Dropdown([
+                    ('Content', 'content'), ('Bounding Boxes & Sort', 'bounding_boxes'),
+                    ('Status & Order', 'status_and_order'), ('Crop', 'crop'), ('Review', 'review')],
+                    value='review', label='Stage', interactive=False)
+                note_text=gr.Textbox(label='Evaluator note', lines=4)
+            with gr.Row(scale=0, elem_id='note-footer'):
                 note_save=gr.Button('Save note', variant='primary')
                 note_close=gr.Button('Close')
         message=gr.Markdown(startup,visible=bool(startup),elem_id='action-message')
@@ -594,7 +595,8 @@ def create_app(options):
                 gr.update(value=snapshot(s)) if inspecting else gr.skip(),
                 content_markup(current_bundle) if inspecting else '',
                 gr.update(visible=has and not inspecting),
-                gr.update(interactive=has),
+                gr.update(visible=has and s.get('mode') == 'fix',
+                          interactive=has and s.get('mode') == 'fix'),
             ])
             return rendered
 
@@ -792,6 +794,7 @@ def create_app(options):
 
         def open_note(ctx):
             if not ctx['active'].get('image'):raise gr.Error('Select an image first.')
+            if ctx['active'].get('mode') != 'fix':raise gr.Error('Choose Fix before adding a stage note.')
             stage=stage_for(ctx)
             return gr.update(visible=True),stage,ctx['notes'].get(ctx['active']['image'],{}).get(stage,''),ctx['active']['image']
 
