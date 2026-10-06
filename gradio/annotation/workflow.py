@@ -302,14 +302,15 @@ class Workflow:
                         if value != MISSING_ANNOTATION
                     ) == Counter(source_chars)
                 else:
-                    text_matches = Counter(saved_annotations[key] for key in box_ids) == Counter(source_chars)
+                    text_matches = (not text_changed or
+                                    Counter(saved_annotations[key] for key in box_ids) == Counter(source_chars))
                 mapping_matches = bool(
                     saved_annotations
                     and set(saved_annotations) == set(loaded_alignment['bounding_boxes'])
                     and set(loaded_mapping) == set(loaded_alignment['bounding_boxes'])
                     and set(loaded_mapping.values()).issubset(s['regions'])
                 )
-                if text_matches and mapping_matches and mismatch_type != 'other':
+                if not text_changed and text_matches and mapping_matches and mismatch_type != 'other':
                     s['bounding_boxes'] = deepcopy(loaded_alignment['bounding_boxes'])
                     s['annotations'] = deepcopy(saved_annotations)
                     s['saved_annotation_text'] = annotations_to_text(saved_annotations)

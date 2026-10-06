@@ -35,6 +35,13 @@ def source_text(s):
     """Render the Status & Order reference text for the sidebar."""
     if not s.get('image') or s.get('current_step') not in (4, 7):
         return ''
+    if s.get('mode') == 'fix' and s['current_step'] == 4:
+        annotations = s.get('annotations', {})
+        text = ''.join(annotations[key] for key in
+                       sorted(s.get('bounding_boxes', {}), key=int)
+                       if key in annotations)
+        return (f'<section class="sidebar-source-text"><span class="eyebrow">'
+                f'Annotation text</span><p>{html.escape(text)}</p></section>')
     source_mismatch = source_mismatch_confirmed(s)
     label = ('Source text' if source_mismatch else
              'Verified annotation text' if s['workflow']['content_verified'] else

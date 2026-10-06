@@ -107,6 +107,31 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(any(c['type'] == 'content_changed' and c['before'] == '永寺' for c in changes))
         self.assertTrue(any(c['type'] == 'character_changed' and c['original_box_id'] == '2' for c in changes))
 
+    def test_fix_alignment_uses_saved_box_characters_instead_of_source(self):
+        from ui.editor import source_text
+        self.baseline['1.png']['document']['annotations'] = {'2': '樂', '1': '寺'}
+        ctx = self.active()
+        state = self.fixed_state(ctx)
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'next')
+        self.assertEqual(state['current_step'], 4)
+        self.assertEqual(state['text_sequence'], ['寺', '樂'])
+        self.assertEqual(state['annotations'], {'2': '樂', '1': '寺'})
+        self.assertIn('<p>寺樂</p>', source_text(state))
+        self.assertNotIn('<p>永寺</p>', source_text(state))
+
+    def test_content_reordering_replaces_saved_character_order(self):
+        from ui.editor import source_text
+        state = self.fixed_state(self.active())
+        state = self.engine.apply(state, 'field',
+                                  dict(path=['content', TITLE], value='寺永'))
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'next')
+        self.assertEqual(state['current_step'], 4)
+        self.assertEqual(state['text_sequence'], ['寺', '永'])
+        self.assertEqual(state['annotations'], {'1': '寺', '2': '永'})
+        self.assertIn('<p>寺永</p>', source_text(state))
+
     def test_unfinished_edit_does_not_replace_committed_content(self):
         ctx = commit(self.active(), [TITLE], finish=True)
         ctx = self.active(ctx)
@@ -208,7 +233,11 @@ class ReviewTests(unittest.TestCase):
         ctx = commit(self.active(), [TITLE], finish=True)
         data = export_archive(ctx)
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            self.assertEqual(len(archive.namelist()), 5)
+            self.assertEqual(set(archive.namelist()), {
+                'review_text_annotations.json',
+                'review_inscription_content.json',
+                'review_summary.json',
+            })
             self.assertTrue(all(name.startswith('review_') for name in archive.namelist()))
         reviewed = self.root / 'review_annotations.zip'
         reviewed.write_bytes(data)

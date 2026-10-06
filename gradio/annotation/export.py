@@ -23,6 +23,8 @@ def export_archive(ctx):
     buffer=io.BytesIO()
     with zipfile.ZipFile(buffer,'w',compression=zipfile.ZIP_DEFLATED) as archive:
         for filename, document in export_documents(ctx).items():
+            if not document:
+                continue
             archive.writestr(filename,json.dumps(document,ensure_ascii=False,indent=2,allow_nan=False))
     return buffer.getvalue()
 
