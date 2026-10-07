@@ -524,17 +524,18 @@ class Workflow:
                     and set((s.get('saved_alignment_document') or s.get('loaded_document'))['annotations'])
                         == set(s['bounding_boxes'])
                 )
-                if has_saved_alignment:
+                if has_saved_alignment and not s['workflow']['alignment_valid']:
                     document = s.get('saved_alignment_document') or s['loaded_document']
                     mismatch_type = (source_mismatch_type(document)
                                      if 'inscription_code' in document else None)
-                    saved_values = list(document['annotations'].values())
+                    saved_values = [document['annotations'][key] for key in
+                                    sorted(document['bounding_boxes'], key=int)]
                     saved_text_matches = (
                         mismatch_type == 'extra_text'
-                        and ''.join(document.get('text_sequence', [])) == s['annotation_text']
+                        and Counter(document.get('text_sequence', [])) == Counter(characters(s['annotation_text']))
                         or mismatch_type == 'missing_text'
-                        and ''.join(value for value in saved_values if value != 'MISS')
-                            == s['annotation_text']
+                        and Counter(value for value in saved_values if value != MISSING_ANNOTATION)
+                            == Counter(characters(s['annotation_text']))
                         or mismatch_type is None and ''.join(saved_values) == s['annotation_text']
                     )
                     if saved_text_matches or mismatch_type is None:
@@ -549,7 +550,8 @@ class Workflow:
                         s['text_token_ids'] = [str(index) for index in
                                                range(1, len(s['text_sequence']) + 1)]
                         s['workflow']['alignment_valid'] = True
-                        s.pop('saved_alignment_document', None)
+                if s['workflow']['alignment_valid']:
+                    s.pop('saved_alignment_document', None)
                 if not s['workflow']['alignment_valid']:
                     mapped = set(s.get('box_id_by_region', {}))
                     n = len(s['regions'])

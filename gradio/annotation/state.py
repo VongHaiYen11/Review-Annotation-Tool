@@ -1,4 +1,5 @@
 from copy import deepcopy
+from collections import Counter
 from .text_alignment import (align_text_with_missing, count_annotation_characters,
                              temporary_align_text, validate_bbox_text_count)
 
@@ -128,7 +129,7 @@ def spatial_box_order(state):
         raise ValueError('Every spatial region must have a numeric Box ID.') from exc
 
 
-def initialize_alignment(state, ordered_uids=None):
+def initialize_alignment(state, ordered_uids=None, *, text_sequence=None, token_ids=None):
     """Assign canonical IDs/order and materialize character tokens.
 
     ``ordered_uids`` is supplied by the frontend reading-order draft. When it
@@ -144,6 +145,17 @@ def initialize_alignment(state, ordered_uids=None):
             or len(set(ordered_uids)) != len(ordered_uids)
             or set(ordered_uids) != set(state['regions'])):
         raise ValueError('Reading order must contain every region exactly once.')
+    # Re-sorting an existing alignment keeps its character sequence, including
+    # MISS positions. Content edits clear annotations and start a new alignment.
+    if (text_sequence is None and state.get('annotations')
+            and set(state['annotations']) == set(state['bounding_boxes'])
+            and set(state['box_id_by_region']) == set(state['regions'])):
+        extra = (source_mismatch_confirmed(state)
+                 and state['source_mismatch']['issue_type'] == 'extra_text')
+        text_sequence = (list(state['text_sequence']) if extra else
+                         [state['annotations'][key] for key in
+                          sorted(state['bounding_boxes'], key=int)])
+        token_ids = list(state['text_token_ids'])
     ids = list(range(1, len(ordered_uids) + 1))
     state['box_id_by_region'] = {uid: str(box_id) for uid, box_id in zip(ordered_uids, ids)}
     state['region_uid_by_box_id'] = {str(box_id): uid for uid, box_id in zip(ordered_uids, ids)}
@@ -166,8 +178,18 @@ def initialize_alignment(state, ordered_uids=None):
     else:
         state['annotations'] = {}
         state['text_sequence'] = []
+    preserve_sequence = (text_sequence is not None
+                         and len(text_sequence) == len(state['text_sequence'])
+                         and (state['workflow']['bbox_valid']
+                              or Counter(text_sequence) == Counter(state['text_sequence'])))
+    if preserve_sequence:
+        state['text_sequence'] = list(text_sequence)
+        state['annotations'] = dict(zip(map(str, ids), text_sequence[:len(ids)]))
+        if (state.get('source_mismatch') or {}).get('issue_type') == 'extra_text':
+            state['source_mismatch']['excluded_characters'] = list(text_sequence[len(ids):])
     token_count = len(ids) if (state.get('source_mismatch') or {}).get('issue_type') == 'other' else len(state['text_sequence'])
-    state['text_token_ids'] = [str(index) for index in range(1,token_count+1)]
+    state['text_token_ids'] = (list(token_ids) if preserve_sequence and token_ids is not None and len(token_ids) == token_count
+                             else [str(index) for index in range(1,token_count+1)])
     state['suspicious_token_ids'] = []
     state['reading_order'] = ids
     if 'suspicious_region_uids' in state:

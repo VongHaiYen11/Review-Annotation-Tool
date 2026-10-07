@@ -83,6 +83,15 @@ def sync_draft_boxes(state, payload, materialize_alignment=True):
     log.info('APPLY: frontend/Python received count=%d IDs=%s', len(boxes), list(boxes))
 
     previous_count = len(state['regions'])
+    sequence = tokens = None
+    if (state.get('annotations') and set(boxes) == set(state['regions'])
+            and set(state['annotations']) == set(state['bounding_boxes'])
+            and set(state['box_id_by_region']) == set(state['regions'])):
+        extra = (source_mismatch_confirmed(state)
+                 and state['source_mismatch']['issue_type'] == 'extra_text')
+        sequence = (list(state['text_sequence']) if extra else
+                    [state['annotations'][key] for key in sorted(state['bounding_boxes'], key=int)])
+        tokens = list(state['text_token_ids'])
     update_bboxes(state, boxes, payload.get('active'), payload.get('selected'))
     if len(state['regions']) != previous_count:
         # Keep the draft issue, but a changed count requires a new
@@ -131,7 +140,8 @@ def sync_draft_boxes(state, payload, materialize_alignment=True):
                     and (state['workflow'].get('bbox_valid')
                          or source_mismatch_confirmed(state))):
                 from .state import initialize_alignment
-                initialize_alignment(state, ordered_uids=ordered_uids)
+                initialize_alignment(state, ordered_uids=ordered_uids,
+                                     text_sequence=sequence, token_ids=tokens)
     log.info('APPLY: persisted draft count=%d IDs=%s',
              len(state['regions']), list(state['regions']))
 

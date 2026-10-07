@@ -178,6 +178,58 @@ class ReviewTests(unittest.TestCase):
         self.assertIsNone(ctx['committed']['1.png']['content'])
         self.assertEqual(export_documents(ctx)['review_inscription_content.json'], [])
 
+    def test_moved_miss_keeps_box_order_through_snapshot_back_and_reopen(self):
+        import re
+        ctx = self.active()
+        state = self.engine.apply(self.fixed_state(ctx), 'field',
+                                  dict(path=['content', TITLE], value='永'))
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'add', dict(bbox=[50,10,60,20]))
+        state = self.engine.apply(state, 'confirm_source_mismatch',
+                                  dict(issue_type='missing_text', note=''))
+        state = self.engine.apply(state, 'sort_boxes')
+        state = self.engine.apply(state, 'next')
+        moved = ['MISS', '永', 'MISS']
+        state = self.engine.apply(state, 'reorder_text', dict(sequence=moved))
+
+        def assert_order(state):
+            self.assertEqual(state['text_sequence'], moved)
+            self.assertEqual([state['annotations'][str(i)] for i in (1,2,3)], moved)
+            self.assertEqual(re.findall(r'data-character="([^"]+)"',
+                                       app.snapshot(state)['markup']), moved)
+
+        assert_order(state)
+        tokens = list(state['text_token_ids'])
+        state = self.engine.apply(state, 'back')
+        boxes = {uid:dict(box, order=int(state['box_id_by_region'][uid]))
+                 for uid,box in state['regions'].items()}
+        boxes[next(iter(boxes))]['bbox'][0] += 1
+        state = self.engine.apply(state, 'next', dict(boxes=boxes))
+        assert_order(state)
+        self.assertEqual(state['text_token_ids'], tokens)
+        state = self.engine.apply(state, 'back')
+        state = self.engine.apply(state, 'sort_boxes')
+        state = self.engine.apply(state, 'next')
+        assert_order(state)
+        ctx['active'] = self.complete(state)
+        ctx = commit(ctx, [TITLE])
+        ctx['active'] = self.engine.open_image(self.images[0], ctx['committed']['1.png'])
+        state = self.fixed_state(ctx)
+        state = self.engine.apply(state, 'next')
+        boxes = {uid:dict(box, order=int(state['box_id_by_region'][uid]))
+                 for uid,box in state['regions'].items()}
+        state = self.engine.apply(state, 'next', dict(boxes=boxes))
+        assert_order(state)
+        # A real source edit intentionally starts a new alignment.
+        state = self.engine.apply(self.engine.apply(state, 'back'), 'back')
+        state = self.engine.apply(state, 'field', dict(path=['content', TITLE], value='寺'))
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'confirm_source_mismatch',
+                                  dict(issue_type='missing_text', note=''))
+        state = self.engine.apply(state, 'sort_boxes')
+        state = self.engine.apply(state, 'next')
+        self.assertEqual(state['text_sequence'], ['寺', 'MISS', 'MISS'])
+
     def test_suspicious_removal_updates_both_files(self):
         self.documents[0]['issue_type'] = ['suspicious_content']
         self.write_zip(suspicious={'1': dict(issue_type='suspicious_content', box_ids=[1], note='Content may be incorrect.')})
