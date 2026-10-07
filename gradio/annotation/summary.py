@@ -32,8 +32,8 @@ def changes_between(baseline, result):
         change('status_and_order', 'character_changed', old.get('annotations', {}).get(original_id),
                new.get('annotations', {}).get(final_id), **details)
         change('status_and_order', 'status_changed',
-               dict(status=original.get('status'), unknown=original.get('unknown', False)),
-               dict(status=box.get('status'), unknown=box.get('unknown', False)), **details)
+               {key: original.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction')},
+               {key: box.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction')}, **details)
     for original_id in sorted(set(old['bounding_boxes']) - matched, key=int):
         change('bounding_boxes', 'box_deleted',
                dict(old['bounding_boxes'][original_id], character=old.get('annotations', {}).get(original_id)),

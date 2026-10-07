@@ -32,8 +32,8 @@ class ReviewTests(unittest.TestCase):
             Image.new('RGB', (100, 100), 'white').save(image)
         self.documents = [dict(
             image=image.name,
-            bounding_boxes={'1': dict(bbox=[10, 10, 20, 20], status='intact'),
-                            '2': dict(bbox=[10, 30, 20, 40], status='damaged', unknown=True)},
+            bounding_boxes={'1': dict(bbox=[10, 10, 20, 20], status='intact', unknown=False, unavailable_font=False, expert_prediction=False),
+                            '2': dict(bbox=[10, 30, 20, 40], status='damaged', unknown=True, unavailable_font=False, expert_prediction=False)},
             annotations={'1': '永', '2': '寺'},
             image_resize=image_resize([100, 100], [100, 100]),
             crop=crop_document(image.name, [0, 0, 100, 100], [100, 100])['crop'],
@@ -236,7 +236,8 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(set(archive.namelist()), {
                 'review_text_annotations.json',
                 'review_inscription_content.json',
-                'review_summary.json',
+                'review_source_mismatches.json',
+                'review_suspicious_details.json',
             })
             self.assertTrue(all(name.startswith('review_') for name in archive.namelist()))
         reviewed = self.root / 'review_annotations.zip'
@@ -341,6 +342,42 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(build_summary(second)['images'][0]['notes'], {})
         first['baseline']['1.png']['document']['annotations']['1'] = '文'
         self.assertEqual(second['baseline']['1.png']['document']['annotations']['1'], '永')
+
+    def test_ui_next_commits_frontend_flags_and_history_reopens_them(self):
+        from xml.etree import ElementTree as ET
+        options = app.parser().parse_args(['--input-zip', str(self.zip), '--image-dir', str(self.root), '--skip-detection'])
+        ui = app.create_app(options)
+        functions = {entry.fn.__name__: entry.fn for entry in ui.fns.values() if entry.fn}
+        ctx = self.active()
+        state = self.engine.apply(self.fixed_state(ctx), 'next')
+        state = self.engine.apply(state, 'next')
+        ctx['active'] = state
+        selection = json.dumps(dict(
+            active='1', statuses={'1':'intact', '2':'damaged'},
+            unknowns={'1':False, '2':True},
+            unavailable_fonts={'1':True, '2':False},
+            expert_predictions={'1':True, '2':False}))
+        result = list(functions['next_with_progress'](ctx, selection=selection))[-1]
+        self.assertEqual(result[0]['active']['current_step'], 6)
+        box = result[0]['active']['bounding_boxes']['1']
+        self.assertEqual((box['status'], box['unavailable_font'], box['expert_prediction']),
+                         ('intact', True, True))
+        ctx = result[0]
+        ctx['baseline'] = self.baseline
+        ctx['active'] = self.engine.apply(ctx['active'], 'next')
+        reviewed = app.snapshot(ctx['active'])['markup']
+        ctx = commit(ctx, [TITLE])
+        opened = functions['open_image'](ctx, str(self.images[0].resolve()))
+        self.assertEqual(opened[0]['active']['bounding_boxes']['1'],
+                         {key:value for key,value in box.items() if key != 'order'})
+        def svg(markup):
+            start = markup.index('<svg class="annotation-canvas"')
+            root = ET.fromstring(markup[start:markup.index('</svg>',start)+6])
+            # Each Workflow has its own temporary preview directory.
+            image = root.find('image')
+            image.set('href', Path(image.get('href')).name)
+            return ET.tostring(root)
+        self.assertEqual(svg(reviewed), svg(opened[55]['value']['markup']))
 
     def test_ui_callbacks_open_fix_notes_reset_and_finish(self):
         options = app.parser().parse_args(['--input-zip', str(self.zip), '--image-dir', str(self.root), '--skip-detection'])

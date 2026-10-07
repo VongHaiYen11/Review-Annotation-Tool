@@ -75,7 +75,7 @@ const updateValidationSummary = () => {
     });
     if (hasOrder) {
       element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
-        const text = group.querySelector('text');
+        const text = group.querySelector('[data-box-order-label]');
         if (text) text.textContent = '';
       });
       isDirty = true;
@@ -126,6 +126,8 @@ const cloneBoxes = boxes => Object.fromEntries(Object.entries(boxes || {}).map((
   const copy = structuredClone(box);
   copy.bbox = [...box.bbox];
   copy.unknown = Boolean(box.unknown);
+  copy.unavailable_font = Boolean(box.unavailable_font);
+  copy.expert_prediction = Boolean(box.expert_prediction);
   copy.order = box.order ?? null;
   return [String(id), copy];
 }));
@@ -156,9 +158,13 @@ const applyImageOnlyMode = (enabled) => {
 root.addEventListener('canvas-image-only-change', event => {
   applyImageOnlyMode(event.detail);
 });
-const statusColor = (status, unknown = false) => status === 'damaged' ? (unknown ? '#f59e0b' : '#ef4444') : '#22c55e';
+const statusColor = (status, expert = false) => expert ? '#facc15' : status === 'damaged' ? '#ef4444' : '#22c55e';
+const textColor = box => box.unavailable_font ? '#ec4899' : box.expert_prediction ? '#facc15' : '#ffffff';
+// Status rendering and selection share opacity so hydration cannot erase Font fill.
+const statusFillOpacity = (box, missing, suspicious) =>
+  missing ? '.30' : box?.unavailable_font ? '.20' : suspicious ? '.20' : '.04';
 const applyAnnotationColor = () => {
-  if (![3, 4].includes(props.value.step)) return;
+  if (props.value.step !== 3) return;
   element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
     const rect = group.querySelector('rect:not([data-image-resize-handle])');
     if (rect) {
@@ -167,7 +173,7 @@ const applyAnnotationColor = () => {
         rect.setAttribute('stroke', annotationColor);
       }
     }
-    const label = group.querySelector('text');
+    const label = group.querySelector('[data-box-order-label]');
     if (label) label.setAttribute('fill', annotationColor);
   });
 };
@@ -208,6 +214,8 @@ const syncExternalControls = () => {
     unknowns: Object.fromEntries(Object.entries(localBoxes).map(
       ([id, box]) => [id, Boolean(box.status === 'damaged' && box.unknown)]
     )),
+    unavailable_fonts: Object.fromEntries(Object.entries(localBoxes).map(([id, box]) => [id, box.unavailable_font])),
+    expert_predictions: Object.fromEntries(Object.entries(localBoxes).map(([id, box]) => [id, box.expert_prediction])),
     boxes: serializeLocalBoxes(),
     orders: Object.fromEntries(Object.entries(localBoxes).map(
       ([id, box]) => [id, box.order ?? null]
@@ -287,6 +295,17 @@ const syncExternalControls = () => {
       active.unknown = false;
       renderLocalStatus(activeBoxId, active.status, false);
     }
+    for (const [flag, selector] of [['unavailable_font', '#unavailable-font-radio'], ['expert_prediction', '#expert-prediction-radio']]) {
+      if (isMissing) active[flag] = false;
+      root.querySelectorAll(`${selector} input`).forEach(input => {
+        const target = active[flag] ? 'True' : 'False';
+        if (input.value === target && !input.checked) {
+          syncingStatusControl = true;
+          try { input.click(); } finally { syncingStatusControl = false; }
+        }
+        input.disabled = isMissing;
+      });
+    }
     const unknownRadioInputs = root.querySelectorAll('#unknown-radio input');
     const unknownContainer = root.querySelector('#unknown-radio');
     const isDamaged = active.status === 'damaged';
@@ -327,20 +346,46 @@ const renderLocalStatus = (id, status, unknown = null) => {
     box.unknown = false;
   }
   group.dataset.status = status;
+  if (box.unknown) { box.unavailable_font = false; box.expert_prediction = false; }
+  if (group.querySelector('rect')?.dataset.missing === '1') {
+    box.unknown = false; box.unavailable_font = false; box.expert_prediction = false;
+  }
+  group.dataset.unavailableFont = String(box.unavailable_font);
+  group.dataset.expertPrediction = String(box.expert_prediction);
   group.dataset.unknown = String(Boolean(box.unknown));
   const revealStatus = props.value.step >= 4;
-  const color = !revealStatus ? annotationColor : statusColor(status, box.unknown);
+  const color = !revealStatus ? annotationColor : statusColor(status, box.expert_prediction);
   const rect = group.querySelector('rect:not([data-image-resize-handle])');
   if (rect) {
     const missing = rect.dataset.missing === '1';
     const suspicious = group.classList.contains('suspicious-region');
-    rect.setAttribute('fill', suspicious ? '#facc15' : missing ? '#e5e7eb' : color);
+    rect.setAttribute('fill', missing ? '#e5e7eb' : box.unavailable_font && revealStatus ? '#ec4899' : suspicious ? '#facc15' : color);
     rect.setAttribute('stroke', color);
     rect.removeAttribute('stroke-dasharray');
-    rect.setAttribute('fill-opacity', suspicious ? '.20' : missing ? '.30' : '.04');
+    rect.setAttribute('fill-opacity', statusFillOpacity(revealStatus ? box : null, missing, suspicious));
   }
-  const label = group.querySelector('text');
-  if (label) label.setAttribute('fill', revealStatus ? color : annotationColor);
+  const label = group.querySelector('[data-box-order-label]');
+  if (label) label.setAttribute('fill', revealStatus ? textColor(box) : annotationColor);
+  let mark = group.querySelector('[data-unknown-mark]');
+  if (revealStatus && box.unknown) {
+    if (!mark) {
+      mark = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      mark.dataset.unknownMark = '1';
+      group.appendChild(mark);
+    }
+    // SVG geometry already includes Review crop/resize transforms.
+    const x1 = rect ? Number(rect.getAttribute('x')) : box.bbox[0];
+    const y1 = rect ? Number(rect.getAttribute('y')) : box.bbox[1];
+    const x2 = rect ? x1 + Number(rect.getAttribute('width')) : box.bbox[2];
+    const y2 = rect ? y1 + Number(rect.getAttribute('height')) : box.bbox[3];
+    const attrs = {x:(x1+x2)/2, y:(y1+y2)/2, 'text-anchor':'middle',
+      'dominant-baseline':'central', fill:'#ef4444', 'font-family':'sans-serif',
+      'font-size':Math.min(x2-x1,y2-y1)*0.80, 'font-weight':'700', 'pointer-events':'none'};
+    Object.entries(attrs).forEach(([key,value]) => mark.setAttribute(key,value));
+    mark.textContent = '?';
+  } else mark?.remove();
+  element.querySelectorAll(`[data-order-chip][data-assigned-box-id="${id}"] .tile-character`)
+    .forEach(chip => { chip.style.color = textColor(box); });
 };
 const renderSelection = (sync = true) => {
   const showResizeHandles = selectedIds.size === 1;
@@ -355,7 +400,7 @@ const renderSelection = (sync = true) => {
       const suspicious = group.classList.contains('suspicious-region');
       const missing = rect.dataset.missing === '1';
       rect.setAttribute('fill-opacity', props.value.step >= 4
-        ? suspicious ? '.20' : missing ? '.30' : '.04'
+        ? statusFillOpacity(localBoxes[id], missing, suspicious)
         : selected ? '.16' : '.04');
       rect.setAttribute('stroke-width', suspicious && active ? '3' : suspicious ? '2' : active ? '2.5' : selected ? '2' : '1.5');
     }
@@ -387,7 +432,7 @@ const updateCanvasLabels = () => {
       const bw = Math.max(1, box[2] - box[0]);
       const bh = Math.max(1, box[3] - box[1]);
       const unit = Math.max(props.value.width, props.value.height) / 900;
-      const fontSize = Math.max(10 * unit, Math.min(bw, bh) * (props.value.step === 4 ? 0.25 : 0.30));
+      const fontSize = Math.max(10 * unit, Math.min(bw, bh) * 0.30);
       const strokeWidth = Math.max(0.5, fontSize * 0.1);
       const centerX = (box[0] + box[2]) / 2;
       text.setAttribute('x', centerX);
@@ -395,7 +440,7 @@ const updateCanvasLabels = () => {
       text.setAttribute('text-anchor', 'middle');
       text.setAttribute('font-size', fontSize);
       text.setAttribute('stroke-width', strokeWidth);
-      text.setAttribute('fill', annotationColor || '#ffffff');
+      text.setAttribute('fill', props.value.step >= 4 ? textColor(b) : annotationColor || '#ffffff');
       const publicBox = props.value.step !== 6;
       const assignedCharacter = props.value.step === 4 ? characterByBoxId.get(String(id)) : null;
       const labelText = publicBox ? (hasOrder
@@ -487,7 +532,7 @@ const hydrateLocalState = () => {
     updateExcludedChips(container);
   });
   if (props.value.step === 4) initializeAlignmentStateFromDOM();
-  if (props.value.step === 4) {
+  if (props.value.step === 4 || (props.value.step === 7 && !props.value.otherMismatch)) {
     Object.entries(localBoxes).forEach(([id, box]) => renderLocalStatus(id, box.status, box.unknown));
   }
   renderSelection();
@@ -646,6 +691,20 @@ root.addEventListener('change', event => {
     syncExternalControls();
     return;
   }
+  for (const [flag, selector] of [['unavailable_font', '#unavailable-font-radio'], ['expert_prediction', '#expert-prediction-radio']]) {
+    const flagInput = event.target.closest(`${selector} input`);
+    if (flagInput && props.value.step === 4 && activeBoxId) {
+      const box = localBoxes[activeBoxId];
+      if (!box || groupFor(activeBoxId)?.querySelector('rect')?.dataset.missing === '1') return;
+      const enabled = flagInput.value.toLowerCase() === 'true';
+      if (flag === 'expert_prediction' && enabled && !box[flag]) box.status = 'damaged';
+      box[flag] = enabled;
+      if (enabled) box.unknown = false;
+      renderLocalStatus(activeBoxId, box.status, box.unknown);
+      syncExternalControls();
+      return;
+    }
+  }
   const unknownInput = event.target.closest('#unknown-radio input');
   if (unknownInput && props.value.step === 4 && activeBoxId) {
     const currentBox = localBoxes[activeBoxId];
@@ -744,7 +803,7 @@ const drawPreview = (group, box) => {
         if (line) ['x1', 'y1', 'x2', 'y2'].forEach((attr, pos) => line.setAttribute(attr, coords[pos]));
       });
   }
-  const label = group.querySelector('text');
+  const label = group.querySelector('[data-box-order-label]');
   if (label) {
     const bw = box[2] - box[0];
     const bh = box[3] - box[1];
@@ -894,7 +953,7 @@ element.addEventListener('apply-status-preview', () => {
         line.setAttribute('vector-effect', 'non-scaling-stroke');
         mark.appendChild(line);
       });
-      group.insertBefore(mark, group.querySelector('text'));
+      group.insertBefore(mark, group.querySelector('[data-box-order-label]'));
     }
     renderLocalStatus(id, box.status, box.unknown);
   });
@@ -907,17 +966,8 @@ function renderSuspiciousPreview() {
     const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${group.dataset.boxId}"]`);
     const suspicious = Boolean(chip?.classList.contains('suspicious'));
     group.classList.toggle('suspicious-region', suspicious);
-    const status = localBoxes[group.dataset.boxId]?.status || 'intact';
-    const unknown = Boolean(localBoxes[group.dataset.boxId]?.unknown);
-    const stroke = statusColor(status, unknown);
-    const rect = group.querySelector('rect:not([data-image-resize-handle])');
-    if (rect) {
-      const missing = rect.dataset.missing === '1';
-      rect.setAttribute('fill', suspicious ? '#facc15' : missing ? '#e5e7eb' : stroke);
-      rect.setAttribute('fill-opacity', suspicious ? '.20' : missing ? '.30' : '.04');
-      rect.setAttribute('stroke', stroke);
-    }
-    const label = group.querySelector('text'); if (label && props.value.step !== 4) label.setAttribute('fill', stroke);
+    const box = localBoxes[group.dataset.boxId];
+    if (box) renderLocalStatus(group.dataset.boxId, box.status, box.unknown);
   });
   applyAnnotationColor();
 }
@@ -1236,7 +1286,7 @@ element.addEventListener('pointerup', event => {
       const bbox = state.result;
       let newId;
       do { newId = `box_new_${nextTemporaryBoxId++}`; } while (localBoxes[newId]);
-      localBoxes[newId] = { bbox: [...bbox], status: 'intact', unknown: false, order: null };
+      localBoxes[newId] = { bbox: [...bbox], status: 'intact', unknown: false, unavailable_font: false, expert_prediction: false, order: null };
       mismatchConfirmationInvalidated = true;
       clearMismatchIssueSelection();
 
@@ -1265,6 +1315,7 @@ element.addEventListener('pointerup', event => {
       text.setAttribute('x', centerX);
       text.setAttribute('y', Math.max(fontSize, bbox[1] - 3 * unit));
       text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('data-box-order-label', '1');
       text.setAttribute('fill', annotationColor);
       text.setAttribute('font-size', fontSize);
       text.setAttribute('stroke', '#17191c');

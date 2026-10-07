@@ -147,7 +147,7 @@ class Workflow:
             if is_mismatch and source_mismatch_type(doc) == 'other':
                 hydrate_doc={
                     'bounding_boxes':{
-                        key:{'bbox':list(box['bbox']),'status':'intact'}
+                        key:{'bbox':list(box['bbox']),'status':'intact','unknown':False,'unavailable_font':False,'expert_prediction':False}
                         for key,box in doc['bounding_boxes'].items()},
                     'annotations':{},
                     'reading_order':sorted(map(int,doc['bounding_boxes'])),
@@ -358,6 +358,9 @@ class Workflow:
                     raise ValueError('Detection is disabled (--skip-detection). Draw boxes manually.')
                 # Detection IDs are discarded; Gradio owns hidden region identity.
                 doc = detect(s['image_path'], self.options)
+                # Detector output is an intermediate document: initialize annotation flags.
+                for box in doc['bounding_boxes'].values():
+                    box.update(unknown=False, unavailable_font=False, expert_prediction=False)
                 validate_document(doc, s['image'], s['image_size'])
                 s['regions'] = {uuid4().hex: deepcopy(box) for box in doc['bounding_boxes'].values()}
                 s['selected_region_uid'] = next(iter(s['regions']), None)
@@ -480,11 +483,11 @@ class Workflow:
             if step not in (4, 5):
                 raise ValueError('Edit status in the Status & Order step.')
             box_id = str(payload.get('id') or s['selected_box_id'])
-            update_status(s, s['region_uid_by_box_id'].get(box_id), payload['status'], payload.get('unknown', False))
+            update_status(s, s['region_uid_by_box_id'].get(box_id), payload['status'], payload.get('unknown'), payload.get('unavailable_font'), payload.get('expert_prediction'))
         elif action == 'statuses':
             if step not in (4, 5):
                 raise ValueError('Edit statuses in the Status & Order step.')
-            replace_statuses(s, payload.get('statuses'), payload.get('unknowns'))
+            replace_statuses(s, payload.get('statuses'), payload.get('unknowns'), payload.get('unavailable_fonts'), payload.get('expert_predictions'))
         elif action == 'reorder_text':
             if step != 4:
                 raise ValueError('Edit character assignment in Step 4.')

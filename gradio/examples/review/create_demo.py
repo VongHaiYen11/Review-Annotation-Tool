@@ -24,7 +24,8 @@ def create_demo(output):
             bbox = [420, 100 + 100 * box_id, 490, 170 + 100 * box_id]
             draw.rectangle(bbox, outline='#73604c', width=3)
             draw.text((bbox[0] + 25, bbox[1] + 25), str(box_id), fill='#3e3124')
-            boxes[str(box_id)] = dict(bbox=bbox, status='intact')
+            boxes[str(box_id)] = dict(bbox=bbox, status='intact', unknown=False,
+                                     unavailable_font=False, expert_prediction=False)
         image.save(images / name)
         documents.append(dict(image=name, bounding_boxes=boxes,
                               annotations={'1': '永', '2': '寺', '3': '樂'},

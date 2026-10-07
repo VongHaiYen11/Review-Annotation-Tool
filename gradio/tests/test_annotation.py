@@ -270,6 +270,25 @@ class Invariants(unittest.TestCase):
         })
         self.assertEqual(s['bounding_boxes'],geometry)
 
+    def test_missing_markers_display_in_review_and_initial_text(self):
+        from ui.editor import source_text
+        from ui.review import content_markup
+        s = state(n=6)
+        s['source_mismatch'] = dict(source_text=s['annotation_text'],
+            source_character_count=3, bounding_box_count=6,
+            issue_type='missing_text', note='')
+        initialize_alignment(s)
+        update_text_sequence(s, ['永', 'MISS', 'MISS', 'MISS', '寺', '樂'])
+        s.update(current_step=7, image_url='image.jpg')
+        expected = '永&lt;miss&gt; &lt;miss&gt; &lt;miss&gt;寺樂'
+        self.assertIn(f'<p>{expected}</p>', snapshot(s)['markup'])
+        s.update(current_step=4, mode='fix')
+        self.assertIn(f'<p>{expected}</p>', source_text(s))
+        bundle = dict(content=dict(content={'Text': '永MISSMISSMISS寺樂'}))
+        self.assertIn(f'<p>{expected}</p>', content_markup(bundle))
+        self.assertEqual(build_text_sequence(s), '永MISSMISSMISS寺樂')
+        self.assertEqual(bundle['content']['content']['Text'], '永MISSMISSMISS寺樂')
+
     def test_missing_source_alignment_adds_reorderable_miss_tags(self):
         s=state(n=5)
         s['source_mismatch']={

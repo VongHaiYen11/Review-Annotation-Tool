@@ -6,6 +6,7 @@ from annotation.reading_order import build_text_sequence, suspicious_box_ids
 from annotation.state import source_mismatch_confirmed
 from annotation.text_alignment import MISSING_ANNOTATION, count_annotation_characters
 from .icons import DOCUMENT
+from .text import display_annotation_text
 
 SCRIPT = (Path(__file__).parent / 'assets/editor.js').read_text()
 CSS = (Path(__file__).parent / 'assets/editor.css').read_text()
@@ -41,13 +42,13 @@ def source_text(s):
                        sorted(s.get('bounding_boxes', {}), key=int)
                        if key in annotations)
         return (f'<section class="sidebar-source-text"><span class="eyebrow">'
-                f'Annotation text</span><p>{html.escape(text)}</p></section>')
+                f'Annotation text</span><p>{html.escape(display_annotation_text(text))}</p></section>')
     source_mismatch = source_mismatch_confirmed(s)
     label = ('Source text' if source_mismatch else
              'Verified annotation text' if s['workflow']['content_verified'] else
              'Unverified annotation text')
     return (f'<section class="sidebar-source-text"><span class="eyebrow">'
-            f'{html.escape(label)}</span><p>{html.escape(s["annotation_text"])}</p></section>')
+            f'{html.escape(label)}</span><p>{html.escape(display_annotation_text(s["annotation_text"]))}</p></section>')
 
 
 def snapshot(s):
@@ -147,15 +148,20 @@ def snapshot(s):
         suspicious = key in suspicious_boxes
         reveal_status = step >= 4 and not other_mismatch
         is_unknown = bool(b.get('unknown', False)) and b['status'] == 'damaged'
-        status_color = ('#f59e0b' if is_unknown else '#ef4444') if b['status'] == 'damaged' else '#22c55e'
+        unavailable_font = bool(b.get('unavailable_font', False))
+        expert_prediction = bool(b.get('expert_prediction', False))
+        status_color = '#facc15' if expert_prediction else '#ef4444' if b['status'] == 'damaged' else '#22c55e'
+        text_color = '#ec4899' if unavailable_font else '#facc15' if expert_prediction else '#ffffff'
         stroke_color=('#ff7a1a' if step==6 else '#f4f4f5' if not reveal_status
                       else status_color)
         missing_annotation = (step in (4, 5, 7) and s.get('annotations', {}).get(str(key)) == MISSING_ANNOTATION)
-        fill_color = ('#ff7a1a' if step==6 else '#facc15' if suspicious
-                      else '#e5e7eb' if missing_annotation else stroke_color)
+        fill_color = ('#ff7a1a' if step==6 else '#e5e7eb' if missing_annotation
+                      else '#ec4899' if reveal_status and unavailable_font
+                      else '#facc15' if suspicious else stroke_color)
         fill_opacity = ('.16' if multi_selected and step in (3,6) else
-                        '.20' if suspicious else
                         '.30' if missing_annotation else
+                        '.20' if reveal_status and unavailable_font else
+                        '.20' if suspicious else
                         '.04')
         public_box = step not in (6,) and not other_mismatch
         if step == 3:
@@ -167,16 +173,18 @@ def snapshot(s):
         identity_attr = (f'data-box-id="{key}" data-region-uid="{key}"'
                          if step == 3 else f'data-box-id="{key}"')
         identity_attr += f' data-status="{b["status"]}" data-unknown="{str(is_unknown).lower()}"'
+        identity_attr += f' data-unavailable-font="{str(unavailable_font).lower()}" data-expert-prediction="{str(expert_prediction).lower()}"'
         group_classes=' '.join(filter(None,(
             'selected-region' if multi_selected else '',
             'active-region' if key==selected_id else '',
             'suspicious-region' if suspicious else '',
         )))
         missing_attr = ' data-missing="1"' if missing_annotation else ''
-        markup+=f'''<g {identity_attr} class="{group_classes}"><title>{'Region' if not public_box else label} · {b['status']}{' · unknown' if is_unknown else ''}{' · suspicious' if suspicious else ''}</title>
+        markup+=f'''<g {identity_attr} class="{group_classes}"><title>{'Region' if not public_box else label} · {b['status']}{' · unknown' if is_unknown else ''}{' · unavailable_font' if unavailable_font else ''}{' · Expert Prediction' if expert_prediction else ''}{' · suspicious' if suspicious else ''}</title>
             <rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" fill="{fill_color}" fill-opacity="{fill_opacity}" stroke="{stroke_color}" stroke-width="{'3' if suspicious and multi_selected else '2' if suspicious else '2.5' if multi_selected else '1.5'}" vector-effect="non-scaling-stroke"{missing_attr}{dashed}/>
             {f'<g data-miss-mark="1" stroke="#ef4444" stroke-width="2.25" stroke-linecap="round" pointer-events="none"><line x1="{miss_x1}" y1="{miss_y1}" x2="{miss_x2}" y2="{miss_y2}" vector-effect="non-scaling-stroke"/><line x1="{miss_x2}" y1="{miss_y1}" x2="{miss_x1}" y2="{miss_y2}" vector-effect="non-scaling-stroke"/></g>' if missing_annotation else ''}
-            {f'<text data-box-order-label="1" x="{(x1+x2)/2}" y="{max(font_size, y1-3*unit)}" text-anchor="middle" fill="{stroke_color}" font-size="{font_size}" font-family="var(--han-nom-font, &quot;Vietnamica NomNaTong&quot;, &quot;Vietnamica DengXian&quot;, sans-serif)" pointer-events="none" paint-order="stroke" stroke="#17191c" stroke-width="{stroke_width}">{label}</text>' if label else ''}'''
+            {f'<text data-unknown-mark="1" x="{(x1+x2)/2}" y="{(y1+y2)/2}" text-anchor="middle" dominant-baseline="central" fill="#ef4444" font-family="sans-serif" font-size="{min(bw,bh)*0.80}" font-weight="700" pointer-events="none">?</text>' if reveal_status and is_unknown and not missing_annotation else ''}
+            {f'<text data-box-order-label="1" x="{(x1+x2)/2}" y="{max(font_size, y1-3*unit)}" text-anchor="middle" fill="{text_color if reveal_status else stroke_color}" font-size="{font_size}" font-family="var(--han-nom-font, &quot;Vietnamica NomNaTong&quot;, &quot;Vietnamica DengXian&quot;, sans-serif)" pointer-events="none" paint-order="stroke" stroke="#17191c" stroke-width="{stroke_width}">{label}</text>' if label else ''}'''
         # Handles are pre-rendered for local selection changes; CSS exposes
         # them only on the browser-local active region.
         if step in (3, 6):
@@ -187,7 +195,7 @@ def snapshot(s):
     if step in (4, 5) or (step == 7 and not other_mismatch):
         suspicious_legend=('<span class="suspicious">Suspicious content</span>'
                            if suspicious_boxes else '')
-        markup+=f'<div class="status-legend"><span class="intact">Intact</span><span class="damaged">Damaged</span><span class="unknown">Unknown</span><span class="missing">MISS content</span>{suspicious_legend}</div>'
+        markup+=f'<div class="status-legend"><span class="intact">Intact</span><span class="damaged">Damaged</span><span class="unknown">Unknown (?)</span><span class="unavailable-font">Unavailable Font</span><span class="expert-prediction">Expert Prediction</span><span class="missing">MISS content</span>{suspicious_legend}</div>'
     if step in (4,7) and not (step==7 and other_mismatch):
         if step == 4:
             chips=[]
@@ -209,10 +217,13 @@ def snapshot(s):
                 box_id=(spatial_ids[position-1] if position<=len(spatial_ids) else '')
                 token_id=(token_ids[position-1] if position<=len(token_ids) else str(position))
                 suspicious=' suspicious' if token_id in suspicious_tokens else ''
+                assigned_box=s.get('bounding_boxes', {}).get(box_id, {})
+                chip_color=('#ec4899' if assigned_box.get('unavailable_font') else
+                            '#facc15' if assigned_box.get('expert_prediction') else '#ffffff')
                 box_attribute=(f' data-assigned-box-id="{box_id}"' if box_id else '')
                 chips.append(f'''<button type="button" class="order-chip{missing}{excluded}{suspicious}" data-order-chip="1" data-token-id="{token_id}" data-character="{attribute_char}"{box_attribute}
                     draggable="false" aria-label="Reading position {position}: {char}" title="{char}">
-                    <span class="tile-character">{char}</span></button>''')
+                    <span class="tile-character" style="color:{chip_color}">{char}</span></button>''')
             title='Character Assignment'
             help_text=('Drag the text cards into the sequence that should be assigned to the spatially sorted boxes.'
                        if chips else 'This confirmed source mismatch has no character mapping to arrange.')
@@ -231,7 +242,7 @@ def snapshot(s):
                 note=(f'<small>Note: {html.escape(issue["note"])}</small>'
                       if issue['note'] else '')
                 final_result=issue['issue_type'] in ('missing_text','extra_text')
-                mismatch_text = (html.escape(build_text_sequence(s))
+                mismatch_text = (html.escape(display_annotation_text(build_text_sequence(s)))
                                  if issue['issue_type'] in ('missing_text','extra_text') else
                                  'No character annotations will be generated for this image.')
                 review_label='FINAL RESULT' if final_result else 'SOURCE MISMATCH'
@@ -241,7 +252,7 @@ def snapshot(s):
                     <small>{html.escape(issue['issue_type'])} · {issue['source_character_count']} characters · {issue['bounding_box_count']} boxes</small>
                     {note}</div>'''
             else:
-                review='<div class="review-text"><p>'+html.escape(build_text_sequence(s))+'</p></div>'
+                review='<div class="review-text"><p>'+html.escape(display_annotation_text(build_text_sequence(s)))+'</p></div>'
             markup+=f'''<section class="review-editor"><div class="order-heading"><div><h2>Final Result</h2></div></div>
                 <div class="review-detail">{review}</div></section>'''
     markup += '''
@@ -291,6 +302,7 @@ def snapshot(s):
                 contentVerified=s['workflow'].get('content_verified', False),
                 characterCount=count_annotation_characters(s['annotation_text']),
                 mismatchConfirmed=source_mismatch,
+                otherMismatch=other_mismatch,
                 mismatchBoxCount=(s.get('source_mismatch') or {}).get('bounding_box_count'),
                 readingOrder=list(s['reading_order']),
                 spatialBoxOrder=(list(s.get('reading_order', [])) if s.get('bounding_boxes') else []),

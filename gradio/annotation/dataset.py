@@ -73,6 +73,8 @@ def load_dataset(archive_path, images):
             raise ValueError(f'Duplicate content for {image}.')
         result[image]['content'] = deepcopy(document)
     suspicious = payloads['suspicious_details']
+    if suspicious == []:
+        suspicious = {}
     if not isinstance(suspicious, dict):
         raise ValueError('suspicious_details must be an object.')
     codes = {Path(image).stem: image for image in result}
