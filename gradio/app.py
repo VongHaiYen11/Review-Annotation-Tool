@@ -64,8 +64,8 @@ FONT_PRELOAD_JS = f"""() => {{
     const label = overlay?.querySelector('span:not(.global-loading-spinner)');
     if (label) label.textContent = 'Loading Hán/Nôm fonts…';
     overlay?.classList.add('is-visible');
-    Promise.all(specs.map(spec => document.fonts.load(spec, sample)))
-        .catch(() => {{}}) // Continue with the browser's normal fallback if a font fails.
+    // Wait for every font, including when one file fails to load.
+    Promise.allSettled(specs.map(spec => document.fonts.load(spec, sample)))
         .finally(() => overlay?.classList.remove('is-visible'));
 }}"""
 SHOW_LOADING_JS = """(...args) => {
