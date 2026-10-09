@@ -13,7 +13,7 @@ def new_state():
                 selection_cleared=False,
                 bounding_boxes={}, annotations={}, reading_order=[],
                 text_sequence=[],
-                text_token_ids=[], suspicious_token_ids=[],
+                text_token_ids=[],
                 box_id_by_region={}, region_uid_by_box_id={}, selected_box_id=None,
                 selected_token_id=None,
                 revision=0, current_step=1,
@@ -28,6 +28,7 @@ def invalidate(state, clear=False):
     state['workflow'].update(bbox_valid=False, alignment_valid=False,
                              status_valid=False, reading_order_valid=False)
     if clear:
+        state.pop('draft_alignment', None)
         state['bounding_boxes'] = {}
         state['annotations'] = {}
         state['reading_order'] = []
@@ -36,7 +37,6 @@ def invalidate(state, clear=False):
         state['selected_box_id'] = None
         state['selected_token_id'] = None
         state['text_token_ids'] = []
-        state['suspicious_token_ids'] = []
     state['saved'] = False
 
 
@@ -135,6 +135,9 @@ def initialize_alignment(state, ordered_uids=None, *, text_sequence=None, token_
     ``ordered_uids`` is supplied by the frontend reading-order draft. When it
     is omitted, the established Python spatial sorter remains authoritative.
     """
+    draft = state.get('draft_alignment')
+    if text_sequence is None and draft and set(draft['regions']) == set(state['regions']):
+        text_sequence, token_ids = draft['sequence'], draft['tokens']
     refresh_bbox_validation(state)
     if (not state['workflow']['content_verified']
             or not (state['workflow']['bbox_valid'] or source_mismatch_confirmed(state))):
@@ -190,13 +193,7 @@ def initialize_alignment(state, ordered_uids=None, *, text_sequence=None, token_
     token_count = len(ids) if (state.get('source_mismatch') or {}).get('issue_type') == 'other' else len(state['text_sequence'])
     state['text_token_ids'] = (list(token_ids) if preserve_sequence and token_ids is not None and len(token_ids) == token_count
                              else [str(index) for index in range(1,token_count+1)])
-    state['suspicious_token_ids'] = []
     state['reading_order'] = ids
-    if 'suspicious_region_uids' in state:
-        from .reading_order import restore_suspicious_tokens
-        restore_suspicious_tokens(state, [state['box_id_by_region'][uid]
-                                         for uid in state['suspicious_region_uids']
-                                         if uid in state['box_id_by_region']])
     state['selected_box_id'] = state['box_id_by_region'].get(state['selected_region_uid'])
     selected_index = (ids.index(int(state['selected_box_id']))
                       if state['selected_box_id'] else None)
@@ -205,6 +202,7 @@ def initialize_alignment(state, ordered_uids=None, *, text_sequence=None, token_
                                   and selected_index < len(state['text_token_ids']) else None)
     from .status import synchronize_missing_statuses
     synchronize_missing_statuses(state)
+    state.pop('draft_alignment', None)
     state['workflow']['alignment_valid'] = True
     state['workflow']['reading_order_valid'] = False
 

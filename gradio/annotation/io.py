@@ -5,7 +5,6 @@ from .text_alignment import MISSING_ANNOTATION, validate_bbox_text_count, charac
 
 
 SOURCE_MISMATCH_TYPES = {'missing_text', 'extra_text', 'other'}
-SUSPICIOUS_NOTE = 'Content may be incorrect.'
 
 
 def canonical_issue_type(value):
@@ -24,12 +23,9 @@ def issue_types(value):
 
 def source_mismatch_type(document):
     values = issue_types(document.get('issue_type'))
-    mismatch = [value for value in values if value != 'suspicious_content']
-    if len(mismatch) != 1 or mismatch[0] not in SOURCE_MISMATCH_TYPES:
+    if len(values) != 1 or values[0] not in SOURCE_MISMATCH_TYPES:
         raise ValueError('A source mismatch must contain exactly one mismatch issue type.')
-    if any(value not in SOURCE_MISMATCH_TYPES | {'suspicious_content'} for value in values):
-        raise ValueError('Invalid issue type.')
-    return mismatch[0]
+    return values[0]
 
 
 def validate_source_mismatch_type(issue_type, character_count, box_count):
@@ -69,9 +65,8 @@ def load_image_list(folder):
 def validate_document(doc, image, size):
     if doc['image'] != image or not isinstance(doc['bounding_boxes'], dict):
         raise ValueError('Annotation does not belong to this image.')
-    if ('issue_type' in doc and 'inscription_code' not in doc
-            and issue_types(doc['issue_type']) != ['suspicious_content']):
-        raise ValueError('Normal annotations may only contain suspicious_content.')
+    if 'issue_type' in doc and 'inscription_code' not in doc:
+        raise ValueError('Normal annotations cannot contain issue_type.')
     for key, box in doc['bounding_boxes'].items():
         if not key.isdecimal() or int(key) < 1 or str(int(key)) != key:
             raise ValueError('Box IDs must be canonical positive integers.')
@@ -80,7 +75,7 @@ def validate_document(doc, image, size):
             raise ValueError('Invalid status.')
         from .status import validate_flags
         validate_flags(box)
-        if doc.get('annotations', {}).get(key) == MISSING_ANNOTATION and any(box[flag] for flag in ('unknown', 'unavailable_font', 'expert_prediction')):
+        if doc.get('annotations', {}).get(key) == MISSING_ANNOTATION and any(box[flag] for flag in ('unknown', 'unavailable_font', 'expert_prediction', 'suspicious')):
             raise ValueError('MISS boxes cannot have character flags.')
     expected_ids = {str(index) for index in range(1, len(doc['bounding_boxes']) + 1)}
     if set(doc['bounding_boxes']) != expected_ids:
@@ -110,11 +105,9 @@ def validate_document(doc, image, size):
 def load_annotation(path, image, size):
     doc = read_json(path)
     required = {'image', 'bounding_boxes', 'annotations', 'image_resize', 'crop'}
-    allowed = required | {'issue_type'}
+    allowed = required
     if not isinstance(doc, dict) or not required.issubset(doc) or not set(doc).issubset(allowed):
         raise ValueError('Invalid annotation document schema.')
-    if isinstance(doc, dict) and 'issue_type' in doc:
-        doc['issue_type'] = issue_types(doc['issue_type'])
     validate_document(doc, image, size)
     return doc
 
@@ -210,9 +203,6 @@ def final_document(state):
     doc['bounding_boxes'] = {
         key: {field: value for field, value in box.items() if field != 'order'}
         for key, box in state['bounding_boxes'].items()}
-    from .reading_order import suspicious_box_ids
-    if suspicious_box_ids(state):
-        doc['issue_type'] = ['suspicious_content']
     from crop.crop import crop_document, image_resize
     scaled_crop, resized_size = crop_export_geometry(state)
     doc['crop'] = crop_document(
@@ -227,14 +217,12 @@ def final_source_mismatch_document(state):
     from .state import source_mismatch_confirmed
     issue = state['source_mismatch'] or {}
     mismatch_type = canonical_issue_type(issue.get('issue_type'))
-    from .reading_order import suspicious_box_ids
-    has_suspicious=bool(suspicious_box_ids(state))
     if mismatch_type == 'other':
         if not source_mismatch_confirmed(state) or not issue.get('note','').strip():
             raise ValueError('Confirm Other with a note before saving.')
         return validate_source_mismatch_document({
             'image':state['image'],'inscription_code':str(state['code']),
-            'issue_type':['other'] + (['suspicious_content'] if has_suspicious else []),
+            'issue_type':['other'],
             'note':issue['note'],
             'bounding_boxes':{
                 str(index):{'bbox':list(state['regions'][uid]['bbox'])}
@@ -250,7 +238,7 @@ def final_source_mismatch_document(state):
         'source_text': state['annotation_text'],
         'source_character_count': issue['source_character_count'],
         'bounding_box_count': issue['bounding_box_count'],
-        'issue_type': [mismatch_type] + (['suspicious_content'] if has_suspicious else []),
+        'issue_type': [mismatch_type],
         'note': issue['note'],
         'bounding_boxes': {
             key: {field: value for field, value in box.items() if field != 'order'}

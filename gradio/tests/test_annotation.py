@@ -14,7 +14,7 @@ from annotation.bbox import (add_bbox, update_bbox, update_bboxes, delete_bbox,
                              sync_draft_boxes)
 from annotation.text_alignment import count_annotation_characters, normalize_annotation_text
 from annotation.reading_order import (update_text_sequence, update_text_tokens,
-                                      build_text_sequence, suspicious_box_ids,
+                                      build_text_sequence,
                                       validate_reading_order)
 from annotation.status import update_status, replace_statuses, confirm_status
 from annotation.io import (final_document, final_source_mismatch_document, load_annotation,
@@ -168,7 +168,7 @@ class Invariants(unittest.TestCase):
         self.assertTrue(source_mismatch_confirmed(s))
         self.assertFalse(s['workflow']['bbox_valid'])
 
-    def test_replacing_box_at_same_count_preserves_mismatch(self):
+    def test_replacing_box_at_same_count_requires_mismatch_confirmation(self):
         s=state('永寺樂文',n=3)
         s['source_mismatch']={
             'source_text':s['annotation_text'],
@@ -181,7 +181,7 @@ class Invariants(unittest.TestCase):
         boxes['replacement']=dict(bbox=[40,0,49,9],status='intact',unknown=False)
         sync_draft_boxes(s,{'boxes':boxes,'active':None,'selected':[]},
                          materialize_alignment=False)
-        self.assertTrue(source_mismatch_confirmed(s))
+        self.assertFalse(source_mismatch_confirmed(s))
 
     def test_clear_source_mismatch_disables_sort_until_counts_match_or_reconfirm(self):
         engine=Workflow.__new__(Workflow)
@@ -249,15 +249,16 @@ class Invariants(unittest.TestCase):
         for sequence in (['永','樂'],['永','樂','樂'],['永','樂',3],None):
             with self.assertRaises(ValueError):update_text_sequence(s,sequence)
 
-    def test_suspicious_identity_follows_duplicate_character_token(self):
+    def test_suspicious_stays_on_box_with_duplicate_character_tokens(self):
         s=aligned_state('永永寺')
         geometry=deepcopy(s['bounding_boxes'])
-        s['suspicious_token_ids']=['2']
+        update_status(s,s['region_uid_by_box_id']['2'],'intact',suspicious=True)
+        geometry=deepcopy(s['bounding_boxes'])
         s['selected_token_id']='2';s['selected_box_id']='2'
-        self.assertEqual(suspicious_box_ids(s),['2'])
+        self.assertTrue(s['bounding_boxes']['2']['suspicious'])
         update_text_tokens(s,['永','永','寺'],['2','1','3'])
-        self.assertEqual(s['suspicious_token_ids'],['2'])
-        self.assertEqual(suspicious_box_ids(s),['1'])
+        self.assertTrue(s['bounding_boxes']['2']['suspicious'])
+        self.assertFalse(s['bounding_boxes']['1']['suspicious'])
         self.assertEqual(s['selected_box_id'],'1')
         self.assertEqual(s['bounding_boxes'],geometry)
 
@@ -324,18 +325,19 @@ class Invariants(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_source_mismatch(path,'12305.png',[100,100])
 
-    def test_source_mismatch_combines_suspicious_issue_without_geometry_changes(self):
+    def test_source_mismatch_keeps_suspicious_in_box_only(self):
         s=state(n=2)
         s['source_mismatch']={
             'source_text':s['annotation_text'],'source_character_count':3,
             'bounding_box_count':2,'issue_type':'extra_text','note':''}
         confirm_status(s);initialize_alignment(s)
         geometry=deepcopy(s['bounding_boxes'])
-        s['suspicious_token_ids']=['1']
+        update_status(s,s['region_uid_by_box_id']['1'],'intact',suspicious=True)
+        geometry=deepcopy(s['bounding_boxes'])
         s['workflow']['reading_order_valid']=True
         confirm_status(s);s['code']='12305'
         document=final_source_mismatch_document(s)
-        self.assertEqual(document['issue_type'],['extra_text','suspicious_content'])
+        self.assertEqual(document['issue_type'],['extra_text'])
         self.assertEqual(document['bounding_boxes'],geometry)
         s['current_step']=7;s['image_url']='image.jpg'
         review=snapshot(s)['markup']

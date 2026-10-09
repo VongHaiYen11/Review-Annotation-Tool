@@ -32,8 +32,8 @@ def changes_between(baseline, result):
         change('status_and_order', 'character_changed', old.get('annotations', {}).get(original_id),
                new.get('annotations', {}).get(final_id), **details)
         change('status_and_order', 'status_changed',
-               {key: original.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction')},
-               {key: box.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction')}, **details)
+               {key: original.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction', 'suspicious')},
+               {key: box.get(key) for key in ('status', 'unknown', 'unavailable_font', 'expert_prediction', 'suspicious')}, **details)
     for original_id in sorted(set(old['bounding_boxes']) - matched, key=int):
         change('bounding_boxes', 'box_deleted',
                dict(old['bounding_boxes'][original_id], character=old.get('annotations', {}).get(original_id)),
@@ -46,11 +46,9 @@ def changes_between(baseline, result):
         doc = bundle['document']
         values = {key: doc[key] for key in ('note', 'source_text', 'excluded_characters') if key in doc}
         issues = doc.get('issue_type', [])
-        values['issue_type'] = [value for value in (issues if isinstance(issues, list) else [issues])
-                                if value != 'suspicious_content']
+        values['issue_type'] = issues if isinstance(issues, list) else [issues]
         return values
     change('bounding_boxes', 'source_mismatch_changed', mismatch_details(baseline), mismatch_details(result))
-    change('status_and_order', 'suspicious_details_changed', baseline.get('suspicious'), result.get('suspicious'))
     return changes
 
 

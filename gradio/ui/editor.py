@@ -2,7 +2,7 @@
 import html
 import hashlib
 from pathlib import Path
-from annotation.reading_order import build_text_sequence, suspicious_box_ids
+from annotation.reading_order import build_text_sequence
 from annotation.state import source_mismatch_confirmed
 from annotation.text_alignment import MISSING_ANNOTATION, count_annotation_characters
 from .icons import DOCUMENT
@@ -132,7 +132,7 @@ def snapshot(s):
         '''
     # Scale labels/handles to image size so full-resolution scans remain editable.
     unit=max(draw_w,draw_h)/900
-    suspicious_boxes=set(suspicious_box_ids(s)) if step in (4,7) else set()
+    suspicious_boxes={key for key,box in boxes.items() if box.get('suspicious')} if step in (4,7) and not other_mismatch else set()
     for key,b in boxes.items():
         if step == 7:
             x1,y1,x2,y2=_review_box(b['bbox'],review_crop,scale_x,scale_y)
@@ -173,7 +173,7 @@ def snapshot(s):
         identity_attr = (f'data-box-id="{key}" data-region-uid="{key}"'
                          if step == 3 else f'data-box-id="{key}"')
         identity_attr += f' data-status="{b["status"]}" data-unknown="{str(is_unknown).lower()}"'
-        identity_attr += f' data-unavailable-font="{str(unavailable_font).lower()}" data-expert-prediction="{str(expert_prediction).lower()}"'
+        identity_attr += f' data-unavailable-font="{str(unavailable_font).lower()}" data-expert-prediction="{str(expert_prediction).lower()}" data-suspicious="{str(bool(b.get('suspicious'))).lower()}"'
         group_classes=' '.join(filter(None,(
             'selected-region' if multi_selected else '',
             'active-region' if key==selected_id else '',
@@ -208,7 +208,6 @@ def snapshot(s):
             # order; recomputing a spatial order here would silently reassign them.
             spatial_ids=list(map(str,s.get('reading_order', [])))
             token_ids=list(map(str,s.get('text_token_ids',[])))
-            suspicious_tokens=set(map(str,s.get('suspicious_token_ids',[])))
             for position,value in enumerate(values,1):
                 char=html.escape(value)
                 missing=' missing' if value == MISSING_ANNOTATION else ''
@@ -216,8 +215,8 @@ def snapshot(s):
                 attribute_char=html.escape(value,quote=True)
                 box_id=(spatial_ids[position-1] if position<=len(spatial_ids) else '')
                 token_id=(token_ids[position-1] if position<=len(token_ids) else str(position))
-                suspicious=' suspicious' if token_id in suspicious_tokens else ''
                 assigned_box=s.get('bounding_boxes', {}).get(box_id, {})
+                suspicious=' suspicious' if assigned_box.get('suspicious') and not missing else ''
                 chip_color=('#ec4899' if assigned_box.get('unavailable_font') else
                             '#facc15' if assigned_box.get('expert_prediction') else '#ffffff')
                 box_attribute=(f' data-assigned-box-id="{box_id}"' if box_id else '')
@@ -306,7 +305,6 @@ def snapshot(s):
                 mismatchBoxCount=(s.get('source_mismatch') or {}).get('bounding_box_count'),
                 readingOrder=list(s['reading_order']),
                 spatialBoxOrder=(list(s.get('reading_order', [])) if s.get('bounding_boxes') else []),
-                suspiciousTokenIds=list(map(str,s.get('suspicious_token_ids',[]))),
                 selectedTokenId=(str(s['selected_token_id'])
                                  if s.get('selected_token_id') is not None else None),
                 orderedAnnotations=([s['annotations'][str(box_id)]

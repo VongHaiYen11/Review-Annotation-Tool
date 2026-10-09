@@ -9,7 +9,7 @@ from PIL import Image
 from .content import validate_content_document
 from .io import _unique, validate_document, validate_source_mismatch_document
 
-FILES = ('text_annotations', 'inscription_content', 'source_mismatches', 'suspicious_details')
+FILES = ('text_annotations', 'inscription_content', 'source_mismatches')
 
 
 def load_dataset(archive_path, images):
@@ -26,7 +26,7 @@ def load_dataset(archive_path, images):
                     raise ValueError(f'{name} is too large (maximum 128 MiB).')
                 payloads[name] = json.loads(archive.read(matches[0]).decode('utf-8-sig'), object_pairs_hook=_unique)
             else:
-                payloads[name] = {} if name == 'suspicious_details' else []
+                payloads[name] = []
     result = {}
     for kind in ('text_annotations', 'source_mismatches'):
         if not isinstance(payloads[kind], list):
@@ -53,11 +53,11 @@ def load_dataset(archive_path, images):
                 validate_source_mismatch_document(document, image, size)
             else:
                 required = {'image', 'bounding_boxes', 'annotations', 'image_resize', 'crop'}
-                if not required.issubset(document) or set(document) - (required | {'issue_type'}):
+                if not required.issubset(document) or set(document) - required:
                     raise ValueError(f'Invalid annotation schema for {image}.')
                 validate_document(document, image, size)
             result[image] = dict(document=deepcopy(document), mismatch=kind == 'source_mismatches',
-                                 content=None, suspicious=None,
+                                 content=None,
                                  origins={key: key for key in document['bounding_boxes']})
     if not result:
         raise ValueError('The ZIP contains no annotations or source mismatches.')
@@ -72,22 +72,6 @@ def load_dataset(archive_path, images):
         if result[image]['content'] is not None:
             raise ValueError(f'Duplicate content for {image}.')
         result[image]['content'] = deepcopy(document)
-    suspicious = payloads['suspicious_details']
-    if suspicious == []:
-        suspicious = {}
-    if not isinstance(suspicious, dict):
-        raise ValueError('suspicious_details must be an object.')
-    codes = {Path(image).stem: image for image in result}
-    for code, detail in suspicious.items():
-        if code not in codes or not isinstance(detail, dict):
-            raise ValueError(f'Invalid suspicious entry: {code}.')
-        boxes = detail.get('box_ids')
-        if (detail.get('issue_type') != 'suspicious_content'
-                or not isinstance(detail.get('note'), str) or not isinstance(boxes, list)
-                or any(type(key) is not int or str(key) not in result[codes[code]]['document']['bounding_boxes'] for key in boxes)
-                or boxes != sorted(set(boxes))):
-            raise ValueError(f'Invalid suspicious boxes for {code}.')
-        result[codes[code]]['suspicious'] = deepcopy(detail)
     return result
 
 

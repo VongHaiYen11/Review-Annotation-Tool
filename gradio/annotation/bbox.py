@@ -20,8 +20,12 @@ def validate_coordinates(bbox, size):
 def add_bbox(state, bbox):
     coords = validate_coordinates(bbox, state['image_size'])
     uid = uuid4().hex
-    state['regions'][uid] = dict(bbox=coords, status='intact', unknown=False, unavailable_font=False, expert_prediction=False)
+    state['regions'][uid] = dict(bbox=coords, status='intact', unknown=False, unavailable_font=False, expert_prediction=False, suspicious=False)
     invalidate(state, clear=True)
+    if state.get('source_mismatch'):
+        state['source_mismatch']['invalidated'] = True
+    for key in ('saved_alignment_document', 'loaded_document', 'loaded_region_uid_by_box_id'):
+        state.pop(key, None)
     return uid
 
 
@@ -56,7 +60,7 @@ def update_bboxes(state, boxes, active=None, selected=None):
         box['bbox'] = validate_coordinates(box.get('bbox'), state['image_size'])
         box.setdefault('status', 'intact')
         from .status import normalize_flags
-        for flag in ('unknown', 'unavailable_font', 'expert_prediction'):
+        for flag in ('unknown', 'unavailable_font', 'expert_prediction', 'suspicious'):
             box.setdefault(flag, False)
         if box['status'] not in {'intact', 'damaged'}:
             raise ValueError(f'Invalid status for box {uid}.')
@@ -64,7 +68,13 @@ def update_bboxes(state, boxes, active=None, selected=None):
         normalized[uid] = box
 
     # Replacement semantics are deliberate: deleted frontend IDs stay deleted.
+    changed_regions = set(normalized) != set(state['regions'])
     state['regions'] = normalized
+    if changed_regions:
+        for key in ('saved_alignment_document', 'loaded_document', 'loaded_region_uid_by_box_id'):
+            state.pop(key, None)
+        if state.get('source_mismatch'):
+            state['source_mismatch']['invalidated'] = True
 
     selected = list(dict.fromkeys(selected or []))
     selected = [uid for uid in selected if uid in state['regions']]
@@ -83,7 +93,10 @@ def sync_draft_boxes(state, payload, materialize_alignment=True):
     log.info('APPLY: frontend/Python received count=%d IDs=%s', len(boxes), list(boxes))
 
     previous_count = len(state['regions'])
+    draft = state.get('draft_alignment')
     sequence = tokens = None
+    if draft and set(draft['regions']) == set(boxes):
+        sequence, tokens = draft['sequence'], draft['tokens']
     if (state.get('annotations') and set(boxes) == set(state['regions'])
             and set(state['annotations']) == set(state['bounding_boxes'])
             and set(state['box_id_by_region']) == set(state['regions'])):
@@ -93,6 +106,8 @@ def sync_draft_boxes(state, payload, materialize_alignment=True):
                     [state['annotations'][key] for key in sorted(state['bounding_boxes'], key=int)])
         tokens = list(state['text_token_ids'])
     update_bboxes(state, boxes, payload.get('active'), payload.get('selected'))
+    if sequence is not None:
+        state['draft_alignment'] = dict(regions=list(boxes), sequence=sequence, tokens=tokens)
     if len(state['regions']) != previous_count:
         # Keep the draft issue, but a changed count requires a new
         # confirmation even if the user later restores the original count.
@@ -104,7 +119,7 @@ def sync_draft_boxes(state, payload, materialize_alignment=True):
         if uid in state['regions'] and status in {'intact', 'damaged'}:
             state['regions'][uid]['status'] = status
     from .status import FLAGS, normalize_flags
-    for flag, field in zip(FLAGS, ('unknowns', 'unavailable_fonts', 'expert_predictions')):
+    for flag, field in zip(FLAGS, ('unknowns', 'unavailable_fonts', 'expert_predictions', 'suspicious')):
         for uid, value in payload.get(field, {}).items():
             if uid in state['regions']:
                 state['regions'][uid][flag] = value
@@ -161,6 +176,8 @@ def delete_bbox(state, region_uid):
     del state['regions'][region_uid]
     if state['selected_region_uid'] == region_uid:
         state['selected_region_uid'] = None
-    state['workflow'].update(alignment_valid=False, status_valid=False,
-                             reading_order_valid=False)
-    state['saved'] = False
+    invalidate(state, clear=True)
+    if state.get('source_mismatch'):
+        state['source_mismatch']['invalidated'] = True
+    for key in ('saved_alignment_document', 'loaded_document', 'loaded_region_uid_by_box_id'):
+        state.pop(key, None)

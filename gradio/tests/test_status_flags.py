@@ -160,7 +160,7 @@ class StatusFlags(unittest.TestCase):
                 document = final_source_mismatch_document(initial) if issue else final_document(initial)
                 baseline = {'1.png': dict(document=document, mismatch=bool(issue),
                     content=dict(image='1.png', inscription_code='1', content={title: text}),
-                    suspicious=None, origins={'1':'1', '2':'2'})}
+                    origins={'1':'1', '2':'2'})}
                 engine = Workflow(SimpleNamespace(content_titles=[title], annotation_title=title))
                 self.addCleanup(engine._preview_cache.cleanup)
                 ctx = new_session(baseline)
@@ -170,7 +170,7 @@ class StatusFlags(unittest.TestCase):
                 state = engine.apply(state, 'next')
                 # Change only flags; Save must classify this as a real edit.
                 state = engine.apply(state, 'status', dict(id='1', status='intact',
-                    unavailable_font=True, expert_prediction=True))
+                    unavailable_font=True, expert_prediction=True, suspicious=True))
                 state = engine.apply(state, 'status', dict(id='1', status='intact'))
                 while state['current_step'] != 7:
                     state = engine.apply(state, 'next')
@@ -182,6 +182,7 @@ class StatusFlags(unittest.TestCase):
                 box = reopened['bounding_boxes']['1']
                 self.assertEqual((box['status'], box['unavailable_font'], box['expert_prediction']),
                                  ('intact', True, True))
+                self.assertTrue(box['suspicious'])
                 # Initial inspection and Review share the same transformed overlay.
                 self.assertTrue(snapshot(reopened)['readOnly'])
                 self.assertEqual(ET.tostring(self.overlay(reopened, 7)[0]), ET.tostring(reviewed_svg))
@@ -189,6 +190,14 @@ class StatusFlags(unittest.TestCase):
                 archive.write_bytes(export_archive(ctx))
                 exported = load_dataset(archive, [image])
                 self.assertEqual(exported['1.png']['document']['bounding_boxes']['1'], box)
+                reopened = engine.open_image(image, saved)
+                reopened.update(mode='fix', current_step=2)
+                while reopened['current_step'] != 7:
+                    reopened = engine.apply(reopened, 'next')
+                ctx['active'] = reopened
+                saved_again = commit(ctx, [title])['committed']['1.png']
+                self.assertEqual(saved_again, saved)
+                self.assertEqual(saved_again['document'].get('issue_type'), [issue] if issue else None)
                 if not issue:
                     invalid = deepcopy(saved['document'])
                     del invalid['bounding_boxes']['1']['unavailable_font']
@@ -214,7 +223,8 @@ class StatusFlags(unittest.TestCase):
                 validate_document(invalid, '1.png', [100,100])
         for values in (dict(status='unknown'), dict(unknown=True),
                        dict(status='damaged', unknown=True, expert_prediction=True),
-                       dict(status='damaged', unknown=True, unavailable_font=True)):
+                       dict(status='damaged', unknown=True, unavailable_font=True),
+                       dict(status='damaged', unknown=True, suspicious=True)):
             invalid = deepcopy(document)
             invalid['bounding_boxes']['1'].update(values)
             with self.subTest(values=values), self.assertRaises(ValueError):
@@ -227,17 +237,56 @@ class StatusFlags(unittest.TestCase):
                 validate_document(invalid, '1.png', [100,100])
 
     def test_archive_all_categories_and_empty_arrays(self):
-        for baseline in ({}, {'1.png': dict(document={'image':'1.png'}, mismatch=False,
-                content=None, suspicious={'note':'test'})}):
-            ctx = new_session(baseline)
-            with zipfile.ZipFile(io.BytesIO(export_archive(ctx))) as archive:
-                self.assertEqual(set(archive.namelist()), {'review_text_annotations.json',
-                    'review_inscription_content.json', 'review_source_mismatches.json',
-                    'review_suspicious_details.json'})
-                self.assertEqual(json.loads(archive.read('review_suspicious_details.json')),
-                                 {'1': {'note':'test'}} if baseline else [])
-                self.assertEqual(json.loads(archive.read('review_source_mismatches.json')), [])
-                self.assertEqual(json.loads(archive.read('review_inscription_content.json')), [])
+        ctx = new_session({})
+        with zipfile.ZipFile(io.BytesIO(export_archive(ctx))) as archive:
+            self.assertEqual(set(archive.namelist()), {'text_annotations.json',
+                'inscription_content.json', 'source_mismatches.json', 'review_summary.json'})
+            for name in ('text_annotations.json', 'source_mismatches.json', 'inscription_content.json'):
+                self.assertEqual(json.loads(archive.read(name)), [])
+            summary = json.loads(archive.read('review_summary.json'))
+            self.assertEqual(summary['images'], [])
+            self.assertEqual(summary['counts']['total'], 0)
+
+    def test_suspicious_transitions_and_unknown_exclusion(self):
+        s = self.state(); uid = s['region_uid_by_box_id']['1']
+        update_status(s, uid, 'damaged', unknown=True)
+        update_status(s, uid, 'damaged', suspicious=True)
+        self.assertFalse(s['regions'][uid]['unknown'])
+        update_status(s, uid, 'intact', unavailable_font=True, expert_prediction=True)
+        update_status(s, uid, 'intact')
+        self.assertTrue(s['regions'][uid]['suspicious'])
+        group, ns = self.overlay(s, 4)
+        self.assertEqual(group.find('svg:rect', ns).get('fill'), '#ec4899')
+        update_status(s, uid, 'damaged', unknown=True)
+        self.assertTrue(s['regions'][uid]['unknown'])
+        self.assertTrue(all(not s['regions'][uid][flag] for flag in FLAGS[1:]))
+
+    def test_draft_apply_and_reorder_preserve_sequence_and_region_flags(self):
+        from annotation.reading_order import update_text_sequence
+        s = self.state(); uids = list(s['regions'])
+        update_text_sequence(s, ['寺', '永'])
+        update_status(s, uids[0], 'intact', suspicious=True)
+        boxes = deepcopy(s['regions'])
+        for index, uid in enumerate(reversed(uids), 1):
+            boxes[uid]['order'] = index
+        sync_draft_boxes(s, {'boxes': boxes}, materialize_alignment=False)
+        sync_draft_boxes(s, {'boxes': boxes})
+        self.assertEqual(s['text_sequence'], ['寺', '永'])
+        self.assertTrue(s['regions'][uids[0]]['suspicious'])
+        self.assertTrue(s['bounding_boxes'][s['box_id_by_region'][uids[0]]]['suspicious'])
+
+    def test_same_count_replacement_resets_alignment_and_preserves_survivor(self):
+        from annotation.reading_order import update_text_sequence
+        s = self.state(); uids = list(s['regions'])
+        update_text_sequence(s, ['寺', '永'])
+        update_status(s, uids[0], 'intact', suspicious=True)
+        boxes = {uids[0]: dict(s['regions'][uids[0]], order=1),
+                 'replacement': dict(bbox=[70,10,90,30], status='intact', order=2,
+                     **dict.fromkeys(FLAGS, False))}
+        sync_draft_boxes(s, {'boxes': boxes})
+        self.assertEqual(s['text_sequence'], ['永', '寺'])
+        self.assertTrue(s['regions'][uids[0]]['suspicious'])
+        self.assertNotIn(uids[1], s['regions'])
 
     def test_progress_depends_on_current_step(self):
         for step in range(1, 8):

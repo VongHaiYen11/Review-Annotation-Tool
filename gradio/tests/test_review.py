@@ -32,8 +32,8 @@ class ReviewTests(unittest.TestCase):
             Image.new('RGB', (100, 100), 'white').save(image)
         self.documents = [dict(
             image=image.name,
-            bounding_boxes={'1': dict(bbox=[10, 10, 20, 20], status='intact', unknown=False, unavailable_font=False, expert_prediction=False),
-                            '2': dict(bbox=[10, 30, 20, 40], status='damaged', unknown=True, unavailable_font=False, expert_prediction=False)},
+            bounding_boxes={'1': dict(bbox=[10, 10, 20, 20], status='intact', unknown=False, unavailable_font=False, expert_prediction=False, suspicious=False),
+                            '2': dict(bbox=[10, 30, 20, 40], status='damaged', unknown=True, unavailable_font=False, expert_prediction=False, suspicious=False)},
             annotations={'1': '永', '2': '寺'},
             image_resize=image_resize([100, 100], [100, 100]),
             crop=crop_document(image.name, [0, 0, 100, 100], [100, 100])['crop'],
@@ -47,13 +47,12 @@ class ReviewTests(unittest.TestCase):
         self.engine = Workflow(SimpleNamespace(content_titles=[TITLE], annotation_title=TITLE))
         self.addCleanup(self.engine._preview_cache.cleanup)
 
-    def write_zip(self, annotations=None, content=None, mismatches=None, suspicious=None):
+    def write_zip(self, annotations=None, content=None, mismatches=None):
         with zipfile.ZipFile(self.zip, 'w') as archive:
             for filename, data in {
                 'text_annotations.json': self.documents if annotations is None else annotations,
                 'inscription_content.json': self.content if content is None else content,
                 'source_mismatches.json': mismatches or [],
-                'suspicious_details.json': suspicious or {},
             }.items():
                 archive.writestr(filename, json.dumps(data, ensure_ascii=False))
 
@@ -79,8 +78,8 @@ class ReviewTests(unittest.TestCase):
     def test_finish_preserves_original_and_exports_unreviewed_records(self):
         ctx = commit(self.active(), [TITLE], finish=True)
         docs = export_documents(ctx)
-        self.assertEqual(docs['review_text_annotations.json'], self.documents)
-        self.assertEqual(docs['review_inscription_content.json'], self.content)
+        self.assertEqual(docs['text_annotations.json'], self.documents)
+        self.assertEqual(docs['inscription_content.json'], self.content)
         self.assertEqual(docs['review_summary.json']['counts'],
                          dict(total=3, accepted=1, fixed=0, unreviewed=2))
         self.assertEqual(self.baseline, ctx['baseline'])
@@ -99,10 +98,10 @@ class ReviewTests(unittest.TestCase):
         ctx['active'] = self.complete(state)
         ctx = commit(ctx, [TITLE])
         docs = export_documents(ctx)
-        self.assertEqual(docs['review_inscription_content.json'][0]['content'][TITLE], '永楽')
-        self.assertIsNone(docs['review_inscription_content.json'][0]['content']['Toát yếu'])
-        self.assertEqual(docs['review_text_annotations.json'][0]['annotations'], {'1': '永', '2': '楽'})
-        self.assertTrue(all('order' not in box for box in docs['review_text_annotations.json'][0]['bounding_boxes'].values()))
+        self.assertEqual(docs['inscription_content.json'][0]['content'][TITLE], '永楽')
+        self.assertIsNone(docs['inscription_content.json'][0]['content']['Toát yếu'])
+        self.assertEqual(docs['text_annotations.json'][0]['annotations'], {'1': '永', '2': '楽'})
+        self.assertTrue(all('order' not in box for box in docs['text_annotations.json'][0]['bounding_boxes'].values()))
         changes = docs['review_summary.json']['images'][0]['changes']
         self.assertTrue(any(c['type'] == 'content_changed' and c['before'] == '永寺' for c in changes))
         self.assertTrue(any(c['type'] == 'character_changed' and c['original_box_id'] == '2' for c in changes))
@@ -138,8 +137,25 @@ class ReviewTests(unittest.TestCase):
         state = self.fixed_state(ctx)
         ctx['active'] = self.engine.apply(state, 'field', dict(path=['content', TITLE], value='永楽'))
         docs = export_documents(ctx)
-        self.assertEqual(docs['review_inscription_content.json'], self.content)
+        self.assertEqual(docs['inscription_content.json'], self.content)
         self.assertEqual(build_summary(ctx)['images'][0]['result'], 'accepted')
+
+    def test_unsaved_suspicious_is_excluded_from_export_and_summary(self):
+        ctx = self.active()
+        state = self.engine.apply(self.fixed_state(ctx), 'next')
+        state = self.engine.apply(state, 'next')
+        ctx['active'] = self.engine.apply(state, 'suspicious', dict(id='1', value=True))
+        self.assertFalse(export_documents(ctx)['text_annotations.json'][0]['bounding_boxes']['1']['suspicious'])
+        self.assertEqual(build_summary(ctx)['counts']['unreviewed'], 3)
+        ctx['active'] = self.complete(ctx['active'])
+        ctx = commit(ctx, [TITLE])
+        self.assertTrue(export_documents(ctx)['text_annotations.json'][0]['bounding_boxes']['1']['suspicious'])
+        change = next(c for c in build_summary(ctx)['images'][0]['changes'] if c['type'] == 'status_changed')
+        self.assertTrue(change['after']['suspicious'])
+        reopened = self.active(ctx)
+        reopened['active'] = self.complete(self.fixed_state(reopened))
+        reopened = commit(reopened, [TITLE])
+        self.assertEqual(reopened['committed'], ctx['committed'])
 
     def test_reordering_tracks_regions_without_false_character_corrections(self):
         result = deepcopy(self.baseline['1.png'])
@@ -176,7 +192,7 @@ class ReviewTests(unittest.TestCase):
         ctx['active'] = self.complete(state)
         ctx = commit(ctx, [TITLE])
         self.assertIsNone(ctx['committed']['1.png']['content'])
-        self.assertEqual(export_documents(ctx)['review_inscription_content.json'], [])
+        self.assertEqual(export_documents(ctx)['inscription_content.json'], [])
 
     def test_moved_miss_keeps_box_order_through_snapshot_back_and_reopen(self):
         import re
@@ -230,34 +246,33 @@ class ReviewTests(unittest.TestCase):
         state = self.engine.apply(state, 'next')
         self.assertEqual(state['text_sequence'], ['寺', 'MISS', 'MISS'])
 
-    def test_suspicious_removal_updates_both_files(self):
-        self.documents[0]['issue_type'] = ['suspicious_content']
-        self.write_zip(suspicious={'1': dict(issue_type='suspicious_content', box_ids=[1], note='Content may be incorrect.')})
+    def test_suspicious_removal_is_saved_and_summarized(self):
+        self.documents[0]['bounding_boxes']['1']['suspicious'] = True
+        self.write_zip()
         baseline = load_dataset(self.zip, self.images)
         ctx = new_session(baseline)
         ctx['active'] = self.engine.open_image(self.images[0], baseline['1.png'])
         state = self.fixed_state(ctx)
-        state['suspicious_token_ids'] = []
-        state.pop('loaded_suspicious_box_ids', None)
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'next')
+        state = self.engine.apply(state, 'suspicious', dict(id='1', value=False))
         ctx['active'] = self.complete(state)
-        ctx['active']['suspicious_token_ids'] = []
         ctx = commit(ctx, [TITLE])
-        docs = export_documents(ctx)
-        self.assertEqual(docs['review_suspicious_details.json'], {})
-        self.assertNotIn('issue_type', docs['review_text_annotations.json'][0])
+        doc = export_documents(ctx)['text_annotations.json'][0]
+        self.assertFalse(doc['bounding_boxes']['1']['suspicious'])
+        self.assertNotIn('issue_type', doc)
         self.assertEqual(build_summary(ctx)['images'][0]['fixed_stages'], ['status_and_order'])
 
     def test_content_correction_preserves_existing_suspicious_markers(self):
-        self.documents[0]['issue_type'] = ['suspicious_content']
-        detail = dict(issue_type='suspicious_content', box_ids=[1], note='Content may be incorrect.')
-        self.write_zip(suspicious={'1': detail})
+        self.documents[0]['bounding_boxes']['1']['suspicious'] = True
+        self.write_zip()
         baseline = load_dataset(self.zip, self.images)
         ctx = new_session(baseline)
         ctx['active'] = self.engine.open_image(self.images[0], baseline['1.png'])
         state = self.engine.apply(self.fixed_state(ctx), 'field', dict(path=['content', TITLE], value='文寺'))
         ctx['active'] = self.complete(state)
         ctx = commit(ctx, [TITLE])
-        self.assertEqual(export_documents(ctx)['review_suspicious_details.json']['1'], detail)
+        self.assertTrue(export_documents(ctx)['text_annotations.json'][0]['bounding_boxes']['1']['suspicious'])
 
     def test_normal_to_mismatch_and_back_replaces_instead_of_duplicates(self):
         ctx = self.active()
@@ -269,16 +284,16 @@ class ReviewTests(unittest.TestCase):
         ctx['active'] = self.complete(state)
         ctx = commit(ctx, [TITLE])
         docs = export_documents(ctx)
-        self.assertEqual(len(docs['review_source_mismatches.json']), 1)
-        self.assertEqual(len(docs['review_text_annotations.json']), 2)
+        self.assertEqual(len(docs['source_mismatches.json']), 1)
+        self.assertEqual(len(docs['text_annotations.json']), 2)
         ctx = self.active(ctx)
         state = self.fixed_state(ctx)
         state = self.engine.apply(state, 'field', dict(path=['content', TITLE], value='永寺'))
         ctx['active'] = self.complete(state)
         ctx = commit(ctx, [TITLE])
         docs = export_documents(ctx)
-        self.assertEqual(docs['review_source_mismatches.json'], [])
-        self.assertEqual(len(docs['review_text_annotations.json']), 3)
+        self.assertEqual(docs['source_mismatches.json'], [])
+        self.assertEqual(len(docs['text_annotations.json']), 3)
 
     def test_export_round_trip_and_input_never_changes(self):
         original = self.zip.read_bytes()
@@ -286,12 +301,11 @@ class ReviewTests(unittest.TestCase):
         data = export_archive(ctx)
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             self.assertEqual(set(archive.namelist()), {
-                'review_text_annotations.json',
-                'review_inscription_content.json',
-                'review_source_mismatches.json',
-                'review_suspicious_details.json',
+                'text_annotations.json',
+                'inscription_content.json',
+                'source_mismatches.json',
+                'review_summary.json',
             })
-            self.assertTrue(all(name.startswith('review_') for name in archive.namelist()))
         reviewed = self.root / 'review_annotations.zip'
         reviewed.write_bytes(data)
         self.assertEqual(load_dataset(reviewed, self.images), self.baseline)
@@ -309,19 +323,12 @@ class ReviewTests(unittest.TestCase):
         ctx = commit(ctx, [TITLE])
         self.assertEqual(ctx['committed']['1.png'], baseline['1.png'])
 
-    def test_other_mismatch_preserves_imported_suspicious_markers(self):
+    def test_other_mismatch_rejects_legacy_suspicious_issue(self):
         doc = dict(image='1.png', inscription_code='1', issue_type=['other', 'suspicious_content'],
-                   note='Image unrelated to source', bounding_boxes={
-                       key: {'bbox': box['bbox']} for key, box in self.documents[0]['bounding_boxes'].items()})
-        detail = dict(issue_type='suspicious_content', box_ids=[1], note='Content may be incorrect.')
-        self.write_zip(annotations=self.documents[1:], content=self.content[1:],
-                       mismatches=[doc], suspicious={'1': detail})
-        baseline = load_dataset(self.zip, self.images)
-        ctx = new_session(baseline)
-        ctx['active'] = self.engine.open_image(self.images[0], baseline['1.png'])
-        ctx['active'] = self.complete(self.fixed_state(ctx))
-        ctx = commit(ctx, [TITLE])
-        self.assertEqual(ctx['committed']['1.png'], baseline['1.png'])
+                   note='', bounding_boxes={'1': {'bbox': [10,10,20,20]}})
+        self.write_zip(annotations=self.documents[1:], content=self.content[1:], mismatches=[doc])
+        with self.assertRaises(ValueError):
+            load_dataset(self.zip, self.images)
 
     def test_added_and_deleted_boxes_include_characters_and_both_ids(self):
         result = deepcopy(self.baseline['1.png'])
@@ -356,8 +363,8 @@ class ReviewTests(unittest.TestCase):
                       if component['type'] == 'dropdown' and component['props'].get('label') == 'Image')
         self.assertEqual([choice[0] for choice in picker['choices']], ['1.png', '3.png'])
         baseline = load_dataset(self.zip, [self.images[0], self.images[2], self.root / 'extra.png'])
-        self.assertEqual(export_documents(new_session(baseline))['review_text_annotations.json'], self.documents)
-        self.assertEqual(export_documents(new_session(baseline))['review_inscription_content.json'], self.content)
+        self.assertEqual(export_documents(new_session(baseline))['text_annotations.json'], self.documents)
+        self.assertEqual(export_documents(new_session(baseline))['inscription_content.json'], self.content)
         history = next(entry.fn for entry in ui.fns.values()
                        if entry.fn and any(getattr(output, 'elem_id', None) == 'history-results'
                                            for output in entry.outputs))
@@ -378,14 +385,14 @@ class ReviewTests(unittest.TestCase):
                      if component['type'] == 'button' and component['props'].get('value') == 'Start Review')
         self.assertFalse(start['interactive'])
         baseline = load_dataset(self.zip, [])
-        self.assertEqual(export_documents(new_session(baseline))['review_text_annotations.json'], self.documents)
+        self.assertEqual(export_documents(new_session(baseline))['text_annotations.json'], self.documents)
 
     def test_coordinate_only_mismatch_without_image_is_preserved(self):
         document = dict(image='missing.png', inscription_code='missing', issue_type=['other'],
                         note='Unrelated source', bounding_boxes={'1': {'bbox': [10, 20, 30, 40]}})
         self.write_zip(mismatches=[document])
         baseline = load_dataset(self.zip, self.images)
-        self.assertEqual(export_documents(new_session(baseline))['review_source_mismatches.json'], [document])
+        self.assertEqual(export_documents(new_session(baseline))['source_mismatches.json'], [document])
 
     def test_notes_and_sessions_are_independent(self):
         first, second = new_session(self.baseline), new_session(self.baseline)
@@ -429,7 +436,7 @@ class ReviewTests(unittest.TestCase):
             image = root.find('image')
             image.set('href', Path(image.get('href')).name)
             return ET.tostring(root)
-        self.assertEqual(svg(reviewed), svg(opened[55]['value']['markup']))
+        self.assertEqual(svg(reviewed), svg(opened[53]['value']['markup']))
 
     def test_ui_callbacks_open_fix_notes_reset_and_finish(self):
         options = app.parser().parse_args(['--input-zip', str(self.zip), '--image-dir', str(self.root), '--skip-detection'])
@@ -439,15 +446,15 @@ class ReviewTests(unittest.TestCase):
         ctx = opened[0]
         self.assertNotIn('baseline', ctx)
         self.assertEqual(ctx['active']['mode'], 'inspect')
-        self.assertEqual(len(opened), 59)
-        self.assertTrue(opened[54]['visible'])
+        self.assertEqual(len(opened), 57)
+        self.assertTrue(opened[52]['visible'])
         self.assertIn('data-review-mode="inspect"', opened[1])
         self.assertFalse(opened[40]['visible'])
-        self.assertFalse(opened[58]['visible'])
-        self.assertFalse(opened[58]['interactive'])
+        self.assertFalse(opened[56]['visible'])
+        self.assertFalse(opened[56]['interactive'])
         self.assertFalse(opened[37]['visible'])
         self.assertEqual(opened[37]['value'], '')
-        inspection = opened[55]['value']['markup']
+        inspection = opened[53]['value']['markup']
         self.assertIn('Review Image', inspection)
         self.assertIn('workbench-board inspection-board', inspection)
         for removed in ('review-editor', 'REVIEW &amp; VERIFICATION',
@@ -457,13 +464,13 @@ class ReviewTests(unittest.TestCase):
         fixed = functions['start_fix'](ctx)
         self.assertEqual(fixed[0]['active']['current_step'], 2)
         self.assertIn('data-review-mode="fix"', fixed[1])
-        self.assertFalse(fixed[54]['visible'])
+        self.assertFalse(fixed[52]['visible'])
         self.assertTrue(fixed[40]['visible'])
         self.assertTrue(fixed[41]['visible'])
         self.assertTrue(fixed[37]['visible'])
-        self.assertTrue(fixed[57]['visible'])
-        self.assertTrue(fixed[58]['visible'])
-        self.assertTrue(fixed[58]['interactive'])
+        self.assertTrue(fixed[55]['visible'])
+        self.assertTrue(fixed[56]['visible'])
+        self.assertTrue(fixed[56]['interactive'])
         note_dialog, stage, _, image = functions['open_note'](fixed[0])
         self.assertTrue(note_dialog['visible'])
         self.assertEqual(stage, 'content')

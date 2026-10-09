@@ -21,8 +21,8 @@ from .bbox import add_bbox, update_bbox, update_bboxes, delete_bbox, sync_draft_
 from .status import (update_status, replace_statuses, confirm_status,
                      synchronize_missing_statuses)
 from .reading_order import (update_text_sequence,
-                            update_text_tokens, restore_suspicious_tokens,
-                            token_id_for_box, validate_reading_order, suspicious_box_ids)
+                            update_text_tokens,
+                            token_id_for_box, validate_reading_order)
 from .io import (final_document, final_source_mismatch_document,
                  source_mismatch_type, canonical_issue_type, validate_document,
                  validate_source_mismatch_type)
@@ -147,7 +147,7 @@ class Workflow:
             if is_mismatch and source_mismatch_type(doc) == 'other':
                 hydrate_doc={
                     'bounding_boxes':{
-                        key:{'bbox':list(box['bbox']),'status':'intact','unknown':False,'unavailable_font':False,'expert_prediction':False}
+                        key:{'bbox':list(box['bbox']),'status':'intact','unknown':False,'unavailable_font':False,'expert_prediction':False,'suspicious':False}
                         for key,box in doc['bounding_boxes'].items()},
                     'annotations':{},
                     'reading_order':sorted(map(int,doc['bounding_boxes'])),
@@ -188,13 +188,6 @@ class Workflow:
                                            range(1, len(state['text_sequence']) + 1)]
             state['loaded_is_mismatch'] = is_mismatch
             state['loaded_region_uid_by_box_id'] = deepcopy(state['region_uid_by_box_id'])
-        suspicious = bundle.get('suspicious')
-        if suspicious:
-            known = set(state['bounding_boxes'])
-            restored_ids = [str(box_id) for box_id in suspicious['box_ids']]
-            if any(box_id not in known for box_id in restored_ids):
-                raise ValueError('Suspicious details reference an unknown Box ID.')
-            state['loaded_suspicious_box_ids'] = restored_ids
         # Editing always uses source-image coordinates. Saved crop corners are
         # in image_resize.output_size coordinates, so undo that resize on load.
         state['crop'] = default_crop(size)
@@ -221,7 +214,6 @@ class Workflow:
             for box_id, uid in state['region_uid_by_box_id'].items()}
         token_count = len(state['bounding_boxes']) if is_mismatch and source_mismatch_type(doc) == 'other' else len(state['text_sequence'])
         state['text_token_ids'] = [str(i) for i in range(1, token_count + 1)]
-        restore_suspicious_tokens(state, state.get('loaded_suspicious_box_ids', []))
         state['workflow'].update(content_verified=True, bbox_valid=not is_mismatch,
                                  alignment_valid=True, status_valid=True, reading_order_valid=True)
         state['current_step'] = 7
@@ -241,10 +233,6 @@ class Workflow:
             s['workflow'] = original['workflow'].copy()
         else:
             s = deepcopy(original)
-        if original.get('region_uid_by_box_id'):
-            suspicious = set(suspicious_box_ids(original))
-            s['suspicious_region_uids'] = [uid for box_id, uid in original['region_uid_by_box_id'].items()
-                                           if box_id in suspicious]
         payload = payload or {}
         if not s.get('image'):
             raise ValueError('Select an image first.')
@@ -338,7 +326,6 @@ class Workflow:
                     s.pop('saved_alignment_document', None)
             s.pop('loaded_region_uid_by_box_id', None)
             s.pop('loaded_is_mismatch', None)
-            s.pop('loaded_suspicious_box_ids', None)
             refresh_bbox_validation(s)
             orders = [region.get('order') for region in s['regions'].values()]
             if (not s['workflow']['alignment_valid'] and s['workflow']['bbox_valid']
@@ -360,7 +347,7 @@ class Workflow:
                 doc = detect(s['image_path'], self.options)
                 # Detector output is an intermediate document: initialize annotation flags.
                 for box in doc['bounding_boxes'].values():
-                    box.update(unknown=False, unavailable_font=False, expert_prediction=False)
+                    box.update(unknown=False, unavailable_font=False, expert_prediction=False, suspicious=False)
                 validate_document(doc, s['image'], s['image_size'])
                 s['regions'] = {uuid4().hex: deepcopy(box) for box in doc['bounding_boxes'].values()}
                 s['selected_region_uid'] = next(iter(s['regions']), None)
@@ -397,6 +384,8 @@ class Workflow:
             refresh_bbox_validation(s)
             if action in ('add', 'delete', 'detect'):
                 s['source_mismatch'] = None
+                for key in ('saved_alignment_document', 'loaded_document', 'loaded_region_uid_by_box_id'):
+                    s.pop(key, None)
         elif action == 'sort_boxes_calc':
             raise ValueError('sort_boxes_calc is calculation-only and must use the UI adapter.')
         elif action == 'sort_boxes':
@@ -469,25 +458,20 @@ class Workflow:
         elif action == 'suspicious':
             if step != 4:
                 raise ValueError('Mark suspicious annotations in Step 4.')
-            token_id = str(payload.get('token_id') or '')
-            if token_id not in set(map(str,s.get('text_token_ids',[]))):
-                raise ValueError('Select an annotation first.')
-            suspicious = set(map(str, s.get('suspicious_token_ids', [])))
-            if bool(payload.get('value')):
-                suspicious.add(token_id)
-            else:
-                suspicious.discard(token_id)
-            s['suspicious_token_ids'] = sorted(suspicious, key=int)
-            s['saved'] = False
+            box_id = str(payload.get('id') or s.get('selected_box_id') or '')
+            uid = s['region_uid_by_box_id'].get(box_id)
+            if uid is None or s['annotations'].get(box_id) == MISSING_ANNOTATION:
+                raise ValueError('Select an annotated box that is not MISS.')
+            update_status(s, uid, s['regions'][uid]['status'], suspicious=payload['value'])
         elif action == 'status':
             if step not in (4, 5):
                 raise ValueError('Edit status in the Status & Order step.')
             box_id = str(payload.get('id') or s['selected_box_id'])
-            update_status(s, s['region_uid_by_box_id'].get(box_id), payload['status'], payload.get('unknown'), payload.get('unavailable_font'), payload.get('expert_prediction'))
+            update_status(s, s['region_uid_by_box_id'].get(box_id), payload['status'], payload.get('unknown'), payload.get('unavailable_font'), payload.get('expert_prediction'), payload.get('suspicious'))
         elif action == 'statuses':
             if step not in (4, 5):
                 raise ValueError('Edit statuses in the Status & Order step.')
-            replace_statuses(s, payload.get('statuses'), payload.get('unknowns'), payload.get('unavailable_fonts'), payload.get('expert_predictions'))
+            replace_statuses(s, payload.get('statuses'), payload.get('unknowns'), payload.get('unavailable_fonts'), payload.get('expert_predictions'), payload.get('suspicious'))
         elif action == 'reorder_text':
             if step != 4:
                 raise ValueError('Edit character assignment in Step 4.')
@@ -495,14 +479,6 @@ class Workflow:
                 update_text_sequence(s, payload['sequence'])
             else:
                 update_text_tokens(s,payload['sequence'],payload['token_order'])
-            suspicious_ids = payload.get('suspicious_token_ids')
-            if suspicious_ids is not None:
-                suspicious_ids = list(map(str, suspicious_ids))
-                known_tokens = set(map(str, s.get('text_token_ids', [])))
-                if (len(suspicious_ids) != len(set(suspicious_ids))
-                        or not set(suspicious_ids).issubset(known_tokens)):
-                    raise ValueError('Suspicious token selection is invalid.')
-                s['suspicious_token_ids'] = sorted(suspicious_ids, key=int)
         elif action == 'next':
             if payload and 'boxes' in payload:
                 sync_draft_boxes(s, payload)

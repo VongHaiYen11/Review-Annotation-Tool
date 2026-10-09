@@ -52,7 +52,6 @@ The ZIP must contain:
 Optional files:
 
 - `inscription_content.json`
-- `suspicious_details.json`
 
 Reviewed files using the corresponding `review_` filenames are also supported, so previous review exports can be reopened.
 
@@ -193,14 +192,13 @@ Unfinished drafts are never included as committed corrections in an export.
 
 ```text
 review_annotations.zip
-├── review_text_annotations.json
-├── review_inscription_content.json
-├── review_source_mismatches.json
-├── review_suspicious_details.json
+├── text_annotations.json
+├── inscription_content.json
+├── source_mismatches.json
 └── review_summary.json
 ```
 
-The four annotation files contain the **complete imported dataset** with committed corrections applied.
+The three annotation files contain the **complete imported dataset** with committed corrections applied.
 
 | Record | Export behavior |
 |---|---|
@@ -353,3 +351,4 @@ python -m unittest discover -s tests
 - Detection retains the existing AutoHDR-derived implementation.
 - ZIP annotations are read directly without extraction.
 - Annotation exports are constructed in memory.
+Each annotated box requires boolean `unknown`, `unavailable_font`, `expert_prediction`, and `suspicious` flags. Suspicious belongs to the box and is mutually exclusive with Unknown. Legacy Suspicious sidecars are not imported. Download All always includes the three data files (empty groups use `[]`) and a regenerated `review_summary.json`; unsaved drafts are excluded.

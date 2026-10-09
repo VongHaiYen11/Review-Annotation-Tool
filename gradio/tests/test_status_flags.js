@@ -20,10 +20,10 @@ class Node {
 }
 const group = new Node();group.rect=new Node();group.label=new Node();group.dataset.boxId='1';
 Object.entries({x:10,y:20,width:30,height:40}).forEach(([k,v])=>group.rect.setAttribute(k,v));
-const chip=new Node();chip.dataset={assignedBoxId:'1',character:'永'};const box={bbox:[10,20,40,60],status:'intact',unknown:false,unavailable_font:false,expert_prediction:false};
+const chip=new Node();chip.dataset={assignedBoxId:'1',character:'永'};const box={bbox:[10,20,40,60],status:'intact',unknown:false,unavailable_font:false,expert_prediction:false,suspicious:false};
 const context = {localBoxes:{'1':box},groupFor:()=>group,props:{value:{step:4}},
   selectedIds:new Set(['1']), annotationColor:'#22d3ee', element:{querySelectorAll:selector=>selector.startsWith('.annotation-canvas')?[group]:selector==='[data-order-chip]'?[]:[chip]}, document:{createElementNS:()=>new Node()},
-  activeBoxId:'1',syncExternalControls:()=>{},assert};
+  activeBoxId:'1',syncExternalControls:()=>{},renderSuspiciousPreview:()=>{},assert};
 vm.createContext(context);
 vm.runInContext(extract('const statusColor =', 'const applyAnnotationColor =') +
   extract('const renderLocalStatus =', 'const updateCanvasLabels ='), context);
@@ -79,7 +79,7 @@ for (const step of [4,7]) {
     [false,false,false,false,true,'intact','#22c55e','#ffffff','#e5e7eb','.30'],
     [false,false,false,true,true,'damaged','#ef4444','#ffffff','#e5e7eb','.30'],
   ]) {
-    Object.assign(box,{status,unavailable_font:font,expert_prediction:expert,unknown});
+    Object.assign(box,{status,unavailable_font:font,expert_prediction:expert,unknown,suspicious});
     group.classList.toggle('suspicious-region',suspicious);
     if(missing) group.rect.dataset.missing='1'; else delete group.rect.dataset.missing;
     run("renderLocalStatus('1',localBoxes['1'].status,localBoxes['1'].unknown); renderSelection(false)");
@@ -113,3 +113,49 @@ assert.deepEqual(JSON.parse(run('JSON.stringify(missMarkLines([10,20,40,60]))'))
 assert.deepEqual(JSON.parse(run('JSON.stringify(missMarkLines([2,3,17,23]))')),
   [[5,7,14,19],[14,7,5,19]]);
 console.log('PASS: MISS mark size before and after crop/resize');
+
+// Exercise the actual box checkbox handler, including disabled MISS/excluded cases.
+const suspiciousHandler = extract("  const suspicious = event.target.closest('#suspicious-toggle", "  const input = event.target.closest('#status-radio input');");
+context.element.querySelector = () => chip;
+context.props.value.step = 4;
+run(`function toggleSuspicious(checked) { const event={target:{closest:()=>({checked})}}; ${suspiciousHandler} }`);
+box.unknown=true; box.status='damaged';
+run('toggleSuspicious(true)');
+assert.equal(box.suspicious,true); assert.equal(box.unknown,false);
+run("radio('#unknown-radio input','True')");
+assert.equal(box.suspicious,false);
+for (const kind of ['missing','excluded']) {
+  chip.classList.toggle(kind,true);
+  run('toggleSuspicious(true)');
+  assert.equal(box.suspicious,false);
+  chip.classList.toggle(kind,false);
+}
+console.log('PASS: Suspicious box checkbox and Unknown/MISS/excluded rules');
+// Production renderer resolves duplicate character cards through their current box.
+const secondGroup = new Node(); secondGroup.rect = new Node(); secondGroup.label = new Node(); secondGroup.dataset.boxId = '2';
+const secondChip = new Node(); secondChip.dataset = {assignedBoxId:'2',character:'永'};
+chip.dataset.character = '永'; chip.dataset.assignedBoxId = '1';
+context.localBoxes['2'] = {bbox:[50,20,80,60],status:'intact',unknown:false,unavailable_font:false,expert_prediction:false,suspicious:false};
+box.unknown=false; box.suspicious=true;
+context.groupFor = id => id === '1' ? group : secondGroup;
+context.element.querySelectorAll = selector => selector.startsWith('.annotation-canvas') ? [group,secondGroup]
+  : selector === '[data-order-chip]' ? [chip,secondChip] : [];
+context.element.querySelector = selector => selector === '.status-legend' ? null
+  : selector.includes('="1"') ? [chip,secondChip].find(c=>c.dataset.assignedBoxId==='1')
+  : [chip,secondChip].find(c=>c.dataset.assignedBoxId==='2');
+context.refreshMissingMark = (g,b,missing) => {g.rect.dataset.missing = missing ? '1' : '0';};
+context.applyAnnotationColor = ()=>{};
+vm.runInContext(extract('function renderSuspiciousPreview()', 'const orderRows ='),context);
+run('renderSuspiciousPreview()');
+assert.equal(chip.classList.contains('suspicious'),true);
+chip.dataset.assignedBoxId='2'; secondChip.dataset.assignedBoxId='1';
+run('renderSuspiciousPreview()');
+assert.equal(chip.classList.contains('suspicious'),false);
+assert.equal(secondChip.classList.contains('suspicious'),true);
+assert.equal(box.suspicious,true); assert.equal(context.localBoxes['2'].suspicious,false);
+secondChip.dataset.character='MISS';
+run('renderSuspiciousPreview()');
+assert.equal(box.suspicious,false);
+assert.equal(secondChip.classList.contains('suspicious'),false);
+assert.equal(group.rect.attrs['fill-opacity'],'.30');
+console.log('PASS: duplicate card reassignment preserves box flag; MISS clears flag and overlay');

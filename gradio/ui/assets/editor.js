@@ -7,7 +7,7 @@ let syncingCoordinateControls = false;
 let isDirty = false, pendingSortSelectedRange = null, pendingSortOverwrite = null;
 let image = props.value.image, localContext = '';
 let localBoxes = {}, selectedIds = new Set(), activeBoxId = null, activeTokenId = null;
-let localTextSequence = [], localTokenOrder = [], localSuspiciousTokenIds = new Set();
+let localTextSequence = [], localTokenOrder = [];
 let alignmentStateReady = false, alignmentContainer = null;
 let mismatchConfirmationInvalidated = false;
 let nextTemporaryBoxId = 1;
@@ -128,6 +128,7 @@ const cloneBoxes = boxes => Object.fromEntries(Object.entries(boxes || {}).map((
   copy.unknown = Boolean(box.unknown);
   copy.unavailable_font = Boolean(box.unavailable_font);
   copy.expert_prediction = Boolean(box.expert_prediction);
+  copy.suspicious = Boolean(box.suspicious);
   copy.order = box.order ?? null;
   return [String(id), copy];
 }));
@@ -224,7 +225,7 @@ const syncExternalControls = () => {
     textSequence: [...localTextSequence],
     tokenOrder: [...(element.querySelectorAll('.order-chips [data-order-chip]') || [])]
       .map(chip => chip.dataset.tokenId),
-    suspiciousTokenIds: [...localSuspiciousTokenIds],
+    suspicious: Object.fromEntries(Object.entries(localBoxes).map(([id, box]) => [id, box.suspicious])),
   };
   const serializedSnapshot = JSON.stringify(bridgeSnapshot);
   // Gradio component values can lag one browser event behind. Keep a
@@ -240,13 +241,11 @@ const syncExternalControls = () => {
       const chip = activeBoxId && element.querySelector(
         `[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
       activeTokenId = chip?.dataset.tokenId || null;
-      const isMissing = Boolean(chip?.classList.contains('missing') || chip?.dataset.character === '[MISS]');
+      const isMissing = Boolean(chip?.classList.contains('missing') || chip?.dataset.character === 'MISS');
       const isExcluded = Boolean(chip?.classList.contains('excluded'));
-      if (isMissing && activeTokenId) {
-        localSuspiciousTokenIds.delete(activeTokenId);
-      }
-      suspicious.disabled = !chip || isExcluded || isMissing;
-      suspicious.checked = Boolean(chip && !isMissing && !isExcluded && localSuspiciousTokenIds.has(activeTokenId));
+      if (isMissing && active) active.suspicious = false;
+      suspicious.disabled = !active || !chip || isExcluded || isMissing;
+      suspicious.checked = Boolean(active?.suspicious && chip && !isMissing && !isExcluded);
     }
   }
   if (props.value.step === 3) {
@@ -290,7 +289,7 @@ const syncExternalControls = () => {
       try { statusRadio.click(); } finally { syncingStatusControl = false; }
     }
     const activeChip = activeBoxId && element.querySelector(`[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
-    const isMissing = Boolean(activeChip?.classList.contains('missing') || activeChip?.dataset.character === '[MISS]');
+    const isMissing = Boolean(activeChip?.classList.contains('missing') || activeChip?.dataset.character === 'MISS');
     if (isMissing && active.unknown) {
       active.unknown = false;
       renderLocalStatus(activeBoxId, active.status, false);
@@ -346,19 +345,27 @@ const renderLocalStatus = (id, status, unknown = null) => {
     box.unknown = false;
   }
   group.dataset.status = status;
-  if (box.unknown) { box.unavailable_font = false; box.expert_prediction = false; }
+  if (box.unknown) { box.unavailable_font = false; box.expert_prediction = false; box.suspicious = false; }
   if (group.querySelector('rect')?.dataset.missing === '1') {
-    box.unknown = false; box.unavailable_font = false; box.expert_prediction = false;
+    box.unknown = false; box.unavailable_font = false; box.expert_prediction = false; box.suspicious = false;
   }
   group.dataset.unavailableFont = String(box.unavailable_font);
   group.dataset.expertPrediction = String(box.expert_prediction);
   group.dataset.unknown = String(Boolean(box.unknown));
+  group.dataset.suspicious = String(box.suspicious);
+  group.classList.toggle('suspicious-region', Boolean(box.suspicious));
   const revealStatus = props.value.step >= 4;
+  const title = group.querySelector(':scope > title');
+  if (title && revealStatus) {
+    const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${id}"]`);
+    const label = chip ? `${box.order ?? id} ${chip.dataset.character}` : (group.querySelector('[data-box-order-label]')?.textContent || id);
+    title.textContent = `${label} · ${status}${box.unknown ? ' · unknown' : ''}${box.unavailable_font ? ' · unavailable_font' : ''}${box.expert_prediction ? ' · Expert Prediction' : ''}${box.suspicious ? ' · suspicious' : ''}`;
+  }
   const color = !revealStatus ? annotationColor : statusColor(status, box.expert_prediction);
   const rect = group.querySelector('rect:not([data-image-resize-handle])');
   if (rect) {
     const missing = rect.dataset.missing === '1';
-    const suspicious = group.classList.contains('suspicious-region');
+    const suspicious = Boolean(box.suspicious);
     rect.setAttribute('fill', missing ? '#e5e7eb' : box.unavailable_font && revealStatus ? '#ec4899' : suspicious ? '#facc15' : color);
     rect.setAttribute('stroke', color);
     rect.removeAttribute('stroke-dasharray');
@@ -397,7 +404,7 @@ const renderSelection = (sync = true) => {
     group.classList.toggle('active-region', active && showResizeHandles);
     const rect = group.querySelector('rect:not([data-image-resize-handle])');
     if (rect) {
-      const suspicious = group.classList.contains('suspicious-region');
+      const suspicious = Boolean(localBoxes[id]?.suspicious);
       const missing = rect.dataset.missing === '1';
       rect.setAttribute('fill-opacity', props.value.step >= 4
         ? statusFillOpacity(localBoxes[id], missing, suspicious)
@@ -513,8 +520,6 @@ const hydrateLocalState = () => {
   if (!preserveOrder) {
     localTextSequence = [...(props.value.orderedAnnotations || [])].map(String);
     localTokenOrder = [];
-    localSuspiciousTokenIds = new Set(
-      (props.value.suspiciousTokenIds || []).map(String));
   }
   imageTransform.width = props.value.width;
   imageTransform.height = props.value.height;
@@ -675,11 +680,12 @@ root.addEventListener('change', event => {
   if (syncingStatusControl) return;
   if (handleAnnotationColor(event.target)) return;
   const suspicious = event.target.closest('#suspicious-toggle input[type="checkbox"]');
-  if (suspicious && props.value.step === 4 && activeTokenId) {
-    if (suspicious.checked) localSuspiciousTokenIds.add(activeTokenId);
-    else localSuspiciousTokenIds.delete(activeTokenId);
-    element.querySelectorAll('[data-order-chip]').forEach(chip =>
-      chip.classList.toggle('suspicious', localSuspiciousTokenIds.has(chip.dataset.tokenId)));
+  if (suspicious && props.value.step === 4 && activeBoxId) {
+    const box = localBoxes[activeBoxId];
+    const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
+    if (!box || !chip || chip.classList.contains('missing') || chip.classList.contains('excluded')) return;
+    box.suspicious = suspicious.checked;
+    if (box.suspicious) box.unknown = false;
     renderSuspiciousPreview();
     renderSelection();
     return;
@@ -711,6 +717,7 @@ root.addEventListener('change', event => {
     if (currentBox && currentBox.status === 'damaged') {
       const isUnknown = unknownInput.value === 'True' || unknownInput.value === 'true';
       renderLocalStatus(activeBoxId, 'damaged', isUnknown);
+      renderSuspiciousPreview();
       syncExternalControls();
     }
     return;
@@ -913,7 +920,7 @@ const updateExcludedChips = container => {
     chip.title = excluded ? 'Excluded from annotation data' : chip.dataset.character;
     const boxId = excluded ? '' : String((props.value.spatialBoxOrder || [])[index] || '');
     if (boxId) chip.dataset.assignedBoxId = boxId; else delete chip.dataset.assignedBoxId;
-    chip.classList.toggle('suspicious', localSuspiciousTokenIds.has(chip.dataset.tokenId));
+    chip.classList.toggle('suspicious', Boolean(boxId && localBoxes[boxId]?.suspicious && chip.dataset.character !== 'MISS'));
   });
   renderSuspiciousPreview();
   updateCanvasLabels();
@@ -921,54 +928,59 @@ const updateExcludedChips = container => {
 
 // Apply Changes only refreshes the browser preview. Next remains responsible
 // for committing the current text/status draft to the Python session.
+const refreshMissingMark = (group, box, missing) => {
+  const rect = group.querySelector('rect:not([data-image-resize-handle])');
+  if (!rect) return;
+  if (missing) rect.dataset.missing = '1'; else delete rect.dataset.missing;
+  group.querySelector('[data-miss-mark]')?.remove();
+  if (!missing) return;
+  const mark = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  mark.setAttribute('data-miss-mark', '1');
+  mark.setAttribute('stroke', '#ef4444');
+  mark.setAttribute('stroke-width', '2.25');
+  mark.setAttribute('stroke-linecap', 'round');
+  mark.setAttribute('pointer-events', 'none');
+  const x = Number(rect.getAttribute('x')), y = Number(rect.getAttribute('y'));
+  missMarkLines([x, y, x + Number(rect.getAttribute('width')), y + Number(rect.getAttribute('height'))]).forEach(coords => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    ['x1', 'y1', 'x2', 'y2'].forEach((key, index) => line.setAttribute(key, coords[index]));
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+    mark.appendChild(line);
+  });
+  group.insertBefore(mark, group.querySelector('[data-box-order-label]'));
+};
 element.addEventListener('apply-status-preview', () => {
   if (props.value.step !== 4) return;
   const container = element.querySelector('.order-chips');
   if (!container) return;
   updateExcludedChips(container);
-  const characterByBoxId = new Map(
-    [...container.querySelectorAll('[data-order-chip][data-assigned-box-id]')]
-      .map(chip => [chip.dataset.assignedBoxId, chip.dataset.character]));
-  element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
-    const id = group.dataset.boxId;
-    const box = localBoxes[id];
-    if (!box) return;
-    const missing = characterByBoxId.get(id) === 'MISS';
-    const rect = group.querySelector('rect:not([data-image-resize-handle])');
-    if (rect) {
-      if (missing) rect.dataset.missing = '1';
-      else delete rect.dataset.missing;
-    }
-    group.querySelector('[data-miss-mark]')?.remove();
-    if (missing) {
-      const mark = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      mark.setAttribute('data-miss-mark', '1');
-      mark.setAttribute('stroke', '#ef4444');
-      mark.setAttribute('stroke-width', '2.25');
-      mark.setAttribute('stroke-linecap', 'round');
-      mark.setAttribute('pointer-events', 'none');
-      missMarkLines(box.bbox).forEach(coords => {
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        ['x1', 'y1', 'x2', 'y2'].forEach((key, index) => line.setAttribute(key, coords[index]));
-        line.setAttribute('vector-effect', 'non-scaling-stroke');
-        mark.appendChild(line);
-      });
-      group.insertBefore(mark, group.querySelector('[data-box-order-label]'));
-    }
-    renderLocalStatus(id, box.status, box.unknown);
-  });
   renderSelection(false);
+  syncExternalControls();
 });
 
 function renderSuspiciousPreview() {
-  if (props.value.step !== 4) return;
   element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
-    const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${group.dataset.boxId}"]`);
-    const suspicious = Boolean(chip?.classList.contains('suspicious'));
-    group.classList.toggle('suspicious-region', suspicious);
     const box = localBoxes[group.dataset.boxId];
-    if (box) renderLocalStatus(group.dataset.boxId, box.status, box.unknown);
+    if (!box) return;
+    const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${group.dataset.boxId}"]`);
+    if (props.value.step === 4 && chip) refreshMissingMark(group, box, chip.dataset.character === 'MISS');
+    renderLocalStatus(group.dataset.boxId, box.status, box.unknown);
   });
+  element.querySelectorAll('[data-order-chip]').forEach(chip => {
+    const box = localBoxes[chip.dataset.assignedBoxId];
+    chip.classList.toggle('suspicious', Boolean(box?.suspicious && !chip.classList.contains('missing') && !chip.classList.contains('excluded')));
+  });
+  const legend = element.querySelector('.status-legend');
+  if (legend) {
+    const anySuspicious = Object.values(localBoxes).some(box => box.suspicious);
+    const item = legend.querySelector('.suspicious');
+    if (anySuspicious && !item) {
+      const label = document.createElement('span');
+      label.className = 'suspicious';
+      label.textContent = 'Suspicious content';
+      legend.appendChild(label);
+    } else if (!anySuspicious) item?.remove();
+  }
   applyAnnotationColor();
 }
 const orderRows = chips => {
@@ -1286,7 +1298,7 @@ element.addEventListener('pointerup', event => {
       const bbox = state.result;
       let newId;
       do { newId = `box_new_${nextTemporaryBoxId++}`; } while (localBoxes[newId]);
-      localBoxes[newId] = { bbox: [...bbox], status: 'intact', unknown: false, unavailable_font: false, expert_prediction: false, order: null };
+      localBoxes[newId] = { bbox: [...bbox], status: 'intact', unknown: false, unavailable_font: false, expert_prediction: false, suspicious: false, order: null };
       mismatchConfirmationInvalidated = true;
       clearMismatchIssueSelection();
 
