@@ -22,7 +22,7 @@ const group = new Node();group.rect=new Node();group.label=new Node();group.data
 Object.entries({x:10,y:20,width:30,height:40}).forEach(([k,v])=>group.rect.setAttribute(k,v));
 const chip=new Node();chip.dataset={assignedBoxId:'1',character:'永'};const box={bbox:[10,20,40,60],status:'intact',unknown:false,unavailable_font:false,expert_prediction:false,suspicious:false};
 const context = {localBoxes:{'1':box},groupFor:()=>group,props:{value:{step:4}},
-  selectedIds:new Set(['1']), annotationColor:'#22d3ee', element:{querySelectorAll:selector=>selector.startsWith('.annotation-canvas')?[group]:selector==='[data-order-chip]'?[]:[chip]}, document:{createElementNS:()=>new Node()},
+  selectedIds:new Set(['1']), annotationColor:'#22d3ee', element:{querySelector:()=>chip,querySelectorAll:selector=>selector.startsWith('.annotation-canvas')?[group]:selector==='[data-order-chip]'?[]:[chip]}, document:{createElementNS:()=>new Node()},
   activeBoxId:'1',syncExternalControls:()=>{},renderSuspiciousPreview:()=>{},assert};
 vm.createContext(context);
 vm.runInContext(extract('const statusColor =', 'const applyAnnotationColor =') +
@@ -181,3 +181,45 @@ for (const kind of ['missing','excluded']) {
   chip.classList.toggle(kind,false);
 }
 console.log('PASS: visible Suspicious True/False selection follows box state and disables MISS/excluded');
+// Special assigned characters update live status and flags through the renderer.
+chip.dataset.assignedBoxId='1'; secondChip.dataset.assignedBoxId='2';
+chip.dataset.character='□'; secondChip.dataset.character='永';
+Object.assign(box,{status:'intact',unknown:false,unavailable_font:true,expert_prediction:true,suspicious:true});
+run('renderSuspiciousPreview()');
+assert.equal(box.status,'damaged'); assert.equal(box.unknown,true);
+assert.equal(box.unavailable_font,false); assert.equal(box.expert_prediction,false); assert.equal(box.suspicious,false);
+assert.equal(group.querySelector('[data-unknown-mark]').textContent,'?');
+chip.dataset.character='@';
+run('renderSuspiciousPreview()');
+assert.equal(box.unavailable_font,true); assert.equal(box.unknown,false);
+assert.equal(group.label.attrs.fill,'#ec4899');
+assert.equal(group.querySelector('[data-unknown-mark]'),undefined);
+chip.dataset.character='永'; secondChip.dataset.character='□';
+run('renderSuspiciousPreview()');
+assert.equal(context.localBoxes['2'].unknown,true);
+assert.equal(context.localBoxes['2'].status,'damaged');
+// An excluded symbol has no receiving box and changes no status.
+chip.dataset.character='@'; delete chip.dataset.assignedBoxId; chip.classList.toggle('excluded',true);
+box.unavailable_font=false;
+run('renderSuspiciousPreview()');
+assert.equal(box.unavailable_font,false);
+console.log('PASS: live square/@ assignment rules, reassignment and excluded symbols');
+// Sorting is independent of source mismatch approval and keeps draft box orders.
+const sortButton = {disabled:true,title:''};
+const summaryHost = {querySelectorAll:()=>[{textContent:'2'},{textContent:'4'},{textContent:''}],querySelector:()=>null};
+const sortContext = {props:{value:{step:3,contentVerified:true,characterCount:4,mismatchConfirmed:false}},
+  localBoxes:{a:{order:1},b:{order:2}},selectedIds:new Set(),isDirty:false,
+  mismatchConfirmationInvalidated:true,
+  root:{querySelector:selector=>selector==='#validation-summary-host'?summaryHost:selector.includes('#sort-boxes')?sortButton:null},
+  element:{querySelectorAll:()=>[]}};
+vm.createContext(sortContext);
+vm.runInContext(extract('const canEditReadingOrder =', 'const cloneBoxes ='),sortContext);
+assert.equal(vm.runInContext('canEditReadingOrder()',sortContext),true);
+vm.runInContext('updateValidationSummary()',sortContext);
+assert.equal(sortButton.disabled,false); assert.equal(sortButton.title,'');
+assert.equal(sortContext.localBoxes.a.order,1); assert.equal(sortContext.localBoxes.b.order,2);
+sortContext.props.value.contentVerified=false;
+assert.equal(vm.runInContext('canEditReadingOrder()',sortContext),false);
+sortContext.props.value.contentVerified=true; sortContext.localBoxes={};
+assert.equal(vm.runInContext('canEditReadingOrder()',sortContext),false);
+console.log('PASS: sorting allows unconfirmed source mismatch and preserves draft orders');

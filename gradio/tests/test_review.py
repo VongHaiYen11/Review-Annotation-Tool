@@ -157,6 +157,28 @@ class ReviewTests(unittest.TestCase):
         reopened = commit(reopened, [TITLE])
         self.assertEqual(reopened['committed'], ctx['committed'])
 
+    def test_symbol_flags_on_load_save_and_reopen(self):
+        self.documents[0]['annotations'] = {'1': '□', '2': '@'}
+        self.content[0]['content'][TITLE] = '□@'
+        for box in self.documents[0]['bounding_boxes'].values():
+            box.update(status='intact', unknown=False, unavailable_font=False,
+                       expert_prediction=False, suspicious=False)
+        self.write_zip()
+        baseline = load_dataset(self.zip, self.images)
+        ctx = new_session(baseline)
+        ctx['active'] = self.engine.open_image(self.images[0], baseline['1.png'])
+        boxes = ctx['active']['bounding_boxes']
+        self.assertTrue(boxes['1']['unknown'])
+        self.assertEqual(boxes['1']['status'], 'damaged')
+        self.assertTrue(boxes['2']['unavailable_font'])
+        ctx['active'] = self.complete(self.fixed_state(ctx))
+        ctx = commit(ctx, [TITLE])
+        saved = ctx['committed']['1.png']
+        self.assertEqual(saved['document']['bounding_boxes'], boxes)
+        reopened = self.engine.open_image(self.images[0], saved)
+        self.assertEqual(reopened['bounding_boxes'], boxes)
+        self.assertEqual(export_documents(ctx)['text_annotations.json'][0]['annotations'], {'1':'□', '2':'@'})
+
     def test_reordering_tracks_regions_without_false_character_corrections(self):
         result = deepcopy(self.baseline['1.png'])
         result['document']['bounding_boxes'] = {'1': result['document']['bounding_boxes']['2'],

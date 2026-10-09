@@ -14,12 +14,17 @@ def validate_flags(box):
         raise ValueError('Unknown requires damaged and cannot coexist with other flags.')
 
 
-def normalize_flags(box, missing=False):
+def normalize_flags(box, missing=False, character=None):
     if missing:
         for flag in FLAGS:
             box[flag] = False
     elif box['status'] != 'damaged':
         box['unknown'] = False
+    if not missing and character == '□':
+        box.update(status='damaged', unknown=True, unavailable_font=False,
+                   expert_prediction=False, suspicious=False)
+    elif not missing and character == '@':
+        box.update(unavailable_font=True, unknown=False)
     validate_flags(box)
 
 
@@ -27,7 +32,8 @@ def synchronize_missing_statuses(state):
     """Synchronize all flags and clear character flags on MISS boxes."""
     for box_id, region_uid in state['region_uid_by_box_id'].items():
         box = state['regions'][region_uid]
-        normalize_flags(box, state.get('annotations', {}).get(str(box_id)) == MISSING_ANNOTATION)
+        normalize_flags(box, state.get('annotations', {}).get(str(box_id)) == MISSING_ANNOTATION,
+                        character=state.get('annotations', {}).get(str(box_id)))
         state['bounding_boxes'][box_id].update({key: box[key] for key in ('status', *FLAGS)})
 
 
@@ -51,7 +57,8 @@ def update_status(state, region_uid, status, unknown=None, unavailable_font=None
     box = dict(old, status=status, unknown=unknown if status == 'damaged' else False,
                unavailable_font=unavailable_font, expert_prediction=expert_prediction, suspicious=suspicious)
     box_id = state['box_id_by_region'].get(region_uid)
-    normalize_flags(box, state.get('annotations', {}).get(str(box_id)) == MISSING_ANNOTATION)
+    normalize_flags(box, state.get('annotations', {}).get(str(box_id)) == MISSING_ANNOTATION,
+                        character=state.get('annotations', {}).get(str(box_id)))
     state['regions'][region_uid] = box
     if box_id in state['bounding_boxes']:
         state['bounding_boxes'][box_id].update({key: box[key] for key in ('status', *FLAGS)})

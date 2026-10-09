@@ -6,8 +6,11 @@ MISSING_ANNOTATION = 'MISS'
 
 
 def normalize_annotation_text(text):
+    # Keep Unicode opening/closing brackets for users to remove explicitly.
     return ''.join(c for c in unicodedata.normalize('NFC', text)
-                   if not c.isspace() and not unicodedata.category(c).startswith('P'))
+                   if not c.isspace() and (c == '@'
+                       or unicodedata.category(c) in {'Ps', 'Pe'}
+                       or not unicodedata.category(c).startswith('P')))
 
 
 def characters(text):

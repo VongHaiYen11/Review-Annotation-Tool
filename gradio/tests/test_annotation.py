@@ -183,7 +183,7 @@ class Invariants(unittest.TestCase):
                          materialize_alignment=False)
         self.assertFalse(source_mismatch_confirmed(s))
 
-    def test_clear_source_mismatch_disables_sort_until_counts_match_or_reconfirm(self):
+    def test_sort_without_source_mismatch_confirmation_preserves_next_validation(self):
         engine=Workflow.__new__(Workflow)
         s=state('永寺樂文',n=3)
         s['current_step']=3
@@ -198,8 +198,11 @@ class Invariants(unittest.TestCase):
         cleared=engine.apply(s,'clear_source_mismatch')
         self.assertFalse(source_mismatch_confirmed(cleared))
         self.assertFalse(cleared['workflow']['bbox_valid'])
-        with self.assertRaisesRegex(ValueError,'confirm a source mismatch'):
-            engine.apply(cleared,'sort_boxes')
+        sorted_state = engine.apply(cleared, 'sort_boxes')
+        self.assertEqual(sorted(box['order'] for box in sorted_state['regions'].values()), [1,2,3])
+        self.assertEqual(sorted_state['annotations'], {})
+        with self.assertRaisesRegex(ValueError, 'confirm a source mismatch'):
+            engine.apply(sorted_state, 'next')
 
     def test_complete_mismatch_order_materializes_character_tokens(self):
         s=state('永寺',n=3)
@@ -403,10 +406,48 @@ class Invariants(unittest.TestCase):
         self.assertEqual(document['image_resize']['output_size'],[3413,4096])
 
     def test_unicode(self):
-        self.assertEqual(count_annotation_characters(' 永、樂。寺\n(𨴦) '),4)
+        self.assertEqual(count_annotation_characters(' 永、樂。寺\n(𨴦) '),6)
         self.assertEqual(count_annotation_characters('a\u0301 𨴦\U000E0100'),2)
-        self.assertEqual(normalize_annotation_text('(永樂寺)'), '永樂寺')
+        self.assertEqual(normalize_annotation_text('(永樂寺)'), '(永樂寺)')
         self.assertFalse(state('，。',0)['workflow']['alignment_valid'])
+
+    def test_normalization_preserves_brackets_until_user_removes_them(self):
+        brackets = '()[]{}（）［］｛｝〈〉《》「」『』【】〔〕〖〗〘〙〚〛'
+        self.assertEqual(normalize_annotation_text(' ，' + brackets + '。@ '), brackets + '@')
+        s = aligned_state('(永)', n=3)
+        self.assertEqual(s['text_sequence'], ['(', '永', ')'])
+        set_verified_content(s, {}, '永')
+        self.assertEqual(count_annotation_characters(s['annotation_text']), 1)
+        self.assertFalse(s['workflow']['alignment_valid'])
+
+    def test_symbol_flags_on_alignment_and_character_reassignment(self):
+        s = aligned_state('□@永')
+        square = s['bounding_boxes']['1']
+        self.assertEqual(square['status'], 'damaged')
+        self.assertTrue(square['unknown'])
+        self.assertTrue(all(not square[key] for key in ('unavailable_font', 'expert_prediction', 'suspicious')))
+        self.assertTrue(s['bounding_boxes']['2']['unavailable_font'])
+        self.assertFalse(s['bounding_boxes']['2']['unknown'])
+        uid = s['region_uid_by_box_id']['3']
+        update_status(s, uid, 'intact', unavailable_font=True, expert_prediction=True, suspicious=True)
+        update_text_sequence(s, ['永', '@', '□'])
+        self.assertEqual(s['bounding_boxes']['3']['status'], 'damaged')
+        self.assertTrue(s['bounding_boxes']['3']['unknown'])
+        self.assertTrue(all(not s['bounding_boxes']['3'][flag] for flag in ('unavailable_font', 'expert_prediction', 'suspicious')))
+        update_text_sequence(s, ['永', '□', '@'])
+        self.assertTrue(s['bounding_boxes']['3']['unavailable_font'])
+        self.assertFalse(s['bounding_boxes']['3']['unknown'])
+        self.assertEqual(normalize_annotation_text(' □，@。永 '), '□@永')
+        self.assertEqual(count_annotation_characters('□@永'), 3)
+
+    def test_excluded_symbols_do_not_mark_boxes(self):
+        s = state('永寺@□', n=2)
+        s['source_mismatch'] = dict(source_text=s['annotation_text'], source_character_count=4,
+                                  bounding_box_count=2, issue_type='extra_text', note='')
+        initialize_alignment(s)
+        self.assertEqual(s['source_mismatch']['excluded_characters'], ['@', '□'])
+        self.assertTrue(all(not box[flag] for box in s['bounding_boxes'].values()
+                            for flag in ('unknown', 'unavailable_font', 'expert_prediction', 'suspicious')))
 
     def test_save_guards(self):
         s=state()

@@ -11,7 +11,7 @@ from urllib.parse import quote
 from PIL import Image
 from .state import (new_state, set_verified_content, refresh_bbox_validation,
                     initialize_alignment, require, invalidate,
-                    source_mismatch_confirmed)
+                    source_mismatch_confirmed, calculate_spatial_order)
 from .content import (annotation_text, edit_content_field,
                               content_fields, content_document,
                               validate_content_document,
@@ -80,6 +80,7 @@ def _load_regions(state, document):
         state['region_uid_by_box_id'][box_id] = uid
     state['bounding_boxes'] = deepcopy(document['bounding_boxes'])
     state['annotations'] = deepcopy(document.get('annotations', {}))
+    synchronize_missing_statuses(state)
     state['saved_annotation_text'] = annotations_to_text(state['annotations'])
     # Saved `annotations` contain the final character -> Box mapping.
     state['reading_order'] = sorted(map(int, document['bounding_boxes']))
@@ -393,9 +394,16 @@ class Workflow:
             if step != 3:
                 raise ValueError('Sort bounding boxes in Step 3.')
             refresh_bbox_validation(s)
-            if not (s['workflow']['bbox_valid'] or source_mismatch_confirmed(s)):
-                raise ValueError('Match the box and character counts or confirm a source mismatch before sorting.')
-            initialize_alignment(s)
+            if not s['regions']:
+                raise ValueError('Add bounding boxes before sorting.')
+            if s['workflow']['bbox_valid'] or source_mismatch_confirmed(s):
+                initialize_alignment(s)
+            else:
+                ordered = calculate_spatial_order(
+                    {uid: box['bbox'] for uid, box in s['regions'].items()}, s['image_size'])
+                for index, uid in enumerate(ordered, 1):
+                    s['regions'][uid]['order'] = index
+                s['saved'] = False
         elif action == 'confirm_source_mismatch':
             if step != 3:
                 raise ValueError('Confirm a source mismatch in Step 3.')

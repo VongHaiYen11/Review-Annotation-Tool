@@ -22,15 +22,7 @@ const imageTransform = { zoom: 100, width: props.value.width, height: props.valu
 const canEditReadingOrder = () => {
   const step = props.value?.step || 1;
   const boxCount = Object.keys(localBoxes).length;
-  const charCount = Number(props.value?.characterCount ?? 0);
-  const bboxValid = Boolean(props.value?.contentVerified)
-    && boxCount === charCount && boxCount > 0;
-  const confirmedBoxCount = Number(props.value?.mismatchBoxCount);
-  const mismatchConfirmed = !mismatchConfirmationInvalidated
-    && Boolean(props.value?.mismatchConfirmed)
-    && confirmedBoxCount === boxCount;
-  return step === 3 && Boolean(props.value?.contentVerified)
-    && (bboxValid || mismatchConfirmed);
+  return step === 3 && Boolean(props.value?.contentVerified) && boxCount > 0;
 };
 
 const orderedClearTargets = () => {
@@ -63,24 +55,7 @@ const updateValidationSummary = () => {
     && Boolean(props.value.mismatchConfirmed)
     && confirmedBoxCount === boxCount;
   const matched = contentVerified && boxCount === charCount && charCount > 0;
-  const canOrder = contentVerified && (matched || mismatchConfirmed);
-
-  if (!matched && !mismatchConfirmed) {
-    let hasOrder = false;
-    Object.values(localBoxes).forEach(box => {
-      if (box.order !== null && box.order !== undefined) {
-        box.order = null;
-        hasOrder = true;
-      }
-    });
-    if (hasOrder) {
-      element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
-        const text = group.querySelector('[data-box-order-label]');
-        if (text) text.textContent = '';
-      });
-      isDirty = true;
-    }
-  }
+  const canOrder = contentVerified && boxCount > 0;
 
   const badge = summaryHost.querySelector('.validation-badge');
   if (badge) {
@@ -111,13 +86,13 @@ const updateValidationSummary = () => {
   if (sortButton) {
     sortButton.disabled = !canOrder;
     sortButton.title = canOrder ? ''
-      : `Reading order is unavailable: ${boxCount} boxes for ${charCount} characters.`;
+      : 'Verify content and add boxes to edit reading order.';
   }
   const clearButton = root.querySelector('button#clear-box-orders, #clear-box-orders button');
   if (clearButton) {
     clearButton.disabled = !canOrder || orderedClearTargets().length === 0;
     clearButton.title = !canOrder
-      ? `Reading order is unavailable: ${boxCount} boxes for ${charCount} characters.`
+      ? 'Verify content and add boxes to edit reading order.'
       : clearButton.disabled ? 'No assigned order to clear in the current selection.' : '';
   }
 };
@@ -164,6 +139,15 @@ const textColor = box => box.unavailable_font ? '#ec4899' : box.expert_predictio
 // Status rendering and selection share opacity so hydration cannot erase Font fill.
 const statusFillOpacity = (box, missing, suspicious) =>
   missing ? '.30' : box?.unavailable_font ? '.20' : suspicious ? '.20' : '.04';
+const applyCharacterFlags = (box, character) => {
+  if (character === '□') {
+    Object.assign(box, {status:'damaged', unknown:true, unavailable_font:false,
+      expert_prediction:false, suspicious:false});
+  } else if (character === '@') {
+    box.unavailable_font = true;
+    box.unknown = false;
+  }
+};
 const applyAnnotationColor = () => {
   if (props.value.step !== 3) return;
   element.querySelectorAll('.annotation-canvas [data-box-id]').forEach(group => {
@@ -279,7 +263,7 @@ const syncExternalControls = () => {
           syncingCoordinateControls = false;
         }
         if (!allowed) {
-          manualOrderInput.placeholder = 'Confirm source mismatch to edit order';
+          manualOrderInput.placeholder = 'Verify content and add boxes to edit order';
         } else if (selectedIds.size > 1) {
           manualOrderInput.placeholder = 'Select 1 box to edit order';
         } else {
@@ -351,6 +335,13 @@ const renderLocalStatus = (id, status, unknown = null) => {
     box.unknown = Boolean(unknown && status === 'damaged');
   } else if (status !== 'damaged') {
     box.unknown = false;
+  }
+  if (props.value.step === 4) {
+    const assignedChip = element.querySelector(`[data-order-chip][data-assigned-box-id="${id}"]`);
+    if (assignedChip && !assignedChip.classList.contains('excluded')) {
+      applyCharacterFlags(box, assignedChip.dataset.character);
+      status = box.status;
+    }
   }
   group.dataset.status = status;
   if (box.unknown) { box.unavailable_font = false; box.expert_prediction = false; box.suspicious = false; }
