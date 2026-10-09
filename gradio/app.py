@@ -411,7 +411,7 @@ def create_app(options):
                     unknown_status=gr.Radio(['False','True'],value='False',label='Unknown character (Damaged only)',interactive=True,elem_id='unknown-radio')
                     unavailable_font_status=gr.Radio(['False','True'],value='False',label='Unavailable Font',interactive=True,elem_id='unavailable-font-radio')
                     expert_prediction_status=gr.Radio(['False','True'],value='False',label='Expert Prediction',interactive=True,elem_id='expert-prediction-radio')
-                    suspicious_toggle=gr.Checkbox(value=False,label='Suspicious annotation',interactive=False,elem_id='suspicious-toggle')
+                    suspicious_toggle=gr.Radio(['False','True'],value='False',label='Suspicious annotation',interactive=False,elem_id='suspicious-radio')
                     apply_changes=gr.Button('Apply Changes', variant='primary',
                                             elem_id='apply-status-changes')
                 with gr.Group(visible=False,
@@ -569,7 +569,7 @@ def create_app(options):
                     gr.update(visible=has and step>1 and not inspecting),gr.update(visible=has and step>1 and not inspecting),
                     (f'`{s["image"]}`' if has else '—'),
                     browser_draft,
-                    gr.update(value=bool(status_box.get('suspicious')),
+                    gr.update(value='True' if status_box.get('suspicious') else 'False',
                               interactive=step==4 and selected_box is not None
                               and s['annotations'].get(selected_box) != 'MISS'),
                     gr.update(value=source_text(s), visible=(step in (4, 7) and has)),

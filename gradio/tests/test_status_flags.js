@@ -114,11 +114,11 @@ assert.deepEqual(JSON.parse(run('JSON.stringify(missMarkLines([2,3,17,23]))')),
   [[5,7,14,19],[14,7,5,19]]);
 console.log('PASS: MISS mark size before and after crop/resize');
 
-// Exercise the actual box checkbox handler, including disabled MISS/excluded cases.
-const suspiciousHandler = extract("  const suspicious = event.target.closest('#suspicious-toggle", "  const input = event.target.closest('#status-radio input');");
+// Exercise the actual box True/False handler, including disabled MISS/excluded cases.
+const suspiciousHandler = extract("  const suspicious = event.target.closest('#suspicious-radio", "  const input = event.target.closest('#status-radio input');");
 context.element.querySelector = () => chip;
 context.props.value.step = 4;
-run(`function toggleSuspicious(checked) { const event={target:{closest:()=>({checked})}}; ${suspiciousHandler} }`);
+run(`function toggleSuspicious(checked) { const event={target:{closest:()=>({value:checked?'True':'False'})}}; ${suspiciousHandler} }`);
 box.unknown=true; box.status='damaged';
 run('toggleSuspicious(true)');
 assert.equal(box.suspicious,true); assert.equal(box.unknown,false);
@@ -130,7 +130,7 @@ for (const kind of ['missing','excluded']) {
   assert.equal(box.suspicious,false);
   chip.classList.toggle(kind,false);
 }
-console.log('PASS: Suspicious box checkbox and Unknown/MISS/excluded rules');
+console.log('PASS: Suspicious box True/False and Unknown/MISS/excluded rules');
 // Production renderer resolves duplicate character cards through their current box.
 const secondGroup = new Node(); secondGroup.rect = new Node(); secondGroup.label = new Node(); secondGroup.dataset.boxId = '2';
 const secondChip = new Node(); secondChip.dataset = {assignedBoxId:'2',character:'永'};
@@ -159,3 +159,25 @@ assert.equal(box.suspicious,false);
 assert.equal(secondChip.classList.contains('suspicious'),false);
 assert.equal(group.rect.attrs['fill-opacity'],'.30');
 console.log('PASS: duplicate card reassignment preserves box flag; MISS clears flag and overlay');
+// The visible radio selection follows box state immediately, including True -> False.
+const suspiciousInputs = ['False','True'].map(value => ({value,checked:value==='False',disabled:true,
+  click() { suspiciousInputs.forEach(input => {input.checked=input===this;}); }}));
+const radioContext = {root:{querySelectorAll:()=>suspiciousInputs},syncingStatusControl:false,box,chip};
+vm.createContext(radioContext);
+vm.runInContext(extract('const syncSuspiciousControl =', 'const syncExternalControls ='),radioContext);
+chip.dataset.character='永'; chip.dataset.assignedBoxId='1'; box.suspicious=true;
+vm.runInContext('syncSuspiciousControl(box,chip)',radioContext);
+assert.equal(suspiciousInputs[1].checked,true);
+assert.equal(suspiciousInputs[1].disabled,false);
+box.suspicious=false; // Unknown=True clears the box flag in the production handler above.
+vm.runInContext('syncSuspiciousControl(box,chip)',radioContext);
+assert.equal(suspiciousInputs[0].checked,true);
+assert.equal(suspiciousInputs[1].checked,false);
+for (const kind of ['missing','excluded']) {
+  chip.classList.toggle(kind,true);
+  vm.runInContext('syncSuspiciousControl(box,chip)',radioContext);
+  assert.equal(suspiciousInputs[0].checked,true);
+  assert.equal(suspiciousInputs.every(input=>input.disabled),true);
+  chip.classList.toggle(kind,false);
+}
+console.log('PASS: visible Suspicious True/False selection follows box state and disables MISS/excluded');

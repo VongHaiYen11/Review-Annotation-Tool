@@ -204,6 +204,21 @@ const setInputValue = (selector, value) => {
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
 };
+const syncSuspiciousControl = (active, chip) => {
+  const isMissing = Boolean(chip?.classList.contains('missing') || chip?.dataset.character === 'MISS');
+  const isExcluded = Boolean(chip?.classList.contains('excluded'));
+  const enabled = Boolean(active && chip && !isMissing && !isExcluded);
+  if (isMissing && active) active.suspicious = false;
+  const target = enabled && active.suspicious ? 'True' : 'False';
+  root.querySelectorAll('#suspicious-radio input').forEach(input => {
+    if (input.value === target && !input.checked) {
+      input.disabled = false;
+      syncingStatusControl = true;
+      try { input.click(); } finally { syncingStatusControl = false; }
+    }
+    input.disabled = !enabled;
+  });
+};
 const syncExternalControls = () => {
   updateValidationSummary();
   const bridgeSnapshot = {
@@ -236,17 +251,10 @@ const syncExternalControls = () => {
   setInputValue('#selection-bridge', serializedSnapshot);
   const active = activeBoxId && localBoxes[activeBoxId];
   if (props.value.step === 4) {
-    const suspicious = root.querySelector('#suspicious-toggle input[type="checkbox"]');
-    if (suspicious) {
-      const chip = activeBoxId && element.querySelector(
-        `[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
-      activeTokenId = chip?.dataset.tokenId || null;
-      const isMissing = Boolean(chip?.classList.contains('missing') || chip?.dataset.character === 'MISS');
-      const isExcluded = Boolean(chip?.classList.contains('excluded'));
-      if (isMissing && active) active.suspicious = false;
-      suspicious.disabled = !active || !chip || isExcluded || isMissing;
-      suspicious.checked = Boolean(active?.suspicious && chip && !isMissing && !isExcluded);
-    }
+    const chip = activeBoxId && element.querySelector(
+      `[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
+    activeTokenId = chip?.dataset.tokenId || null;
+    syncSuspiciousControl(active, chip);
   }
   if (props.value.step === 3) {
     const manualOrderInput = root.querySelector('#manual-box-order input');
@@ -679,12 +687,12 @@ if (sidebar) resizeObserver.observe(sidebar);
 root.addEventListener('change', event => {
   if (syncingStatusControl) return;
   if (handleAnnotationColor(event.target)) return;
-  const suspicious = event.target.closest('#suspicious-toggle input[type="checkbox"]');
+  const suspicious = event.target.closest('#suspicious-radio input');
   if (suspicious && props.value.step === 4 && activeBoxId) {
     const box = localBoxes[activeBoxId];
     const chip = element.querySelector(`[data-order-chip][data-assigned-box-id="${activeBoxId}"]`);
     if (!box || !chip || chip.classList.contains('missing') || chip.classList.contains('excluded')) return;
-    box.suspicious = suspicious.checked;
+    box.suspicious = suspicious.value.toLowerCase() === 'true';
     if (box.suspicious) box.unknown = false;
     renderSuspiciousPreview();
     renderSelection();
